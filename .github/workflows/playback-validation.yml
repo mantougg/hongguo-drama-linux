@@ -17,8 +17,7 @@ jobs:
       - name: Install dependencies and pinned media tools
         run: |
           npm ci --no-audit --no-fund
-          curl -fL --retry 3 --max-time 300 -o /tmp/base-bundle.tar.gz https://github.com/yxt02/hongguo-drama-linux/releases/download/v1.74.6-linux/hongguo-drama-1.74.6-linux-x64.tar.gz
-          python3 scripts/restore-linux-media.py /tmp/base-bundle.tar.gz
+          TMPDIR="$RUNNER_TEMP" python3 scripts/restore-linux-media.py --repository "$GITHUB_REPOSITORY"
           node scripts/setup-ffmpeg-linux.js
       - name: Playback regression and frontend build
         run: |

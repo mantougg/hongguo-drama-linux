@@ -6,17 +6,17 @@
 <p align="center">Find short dramas, watch on your Linux desktop, and resume where you left off.</p>
 <p align="center"><a href="README.md">中文</a> · <strong>English</strong></p>
 <p align="center">
-  <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yxt02/hongguo-drama-linux?style=flat-square"></a>
+  <a href="https://github.com/mantougg/hongguo-drama-linux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/mantougg/hongguo-drama-linux?style=flat-square"></a>
   <img alt="Linux x64" src="https://img.shields.io/badge/platform-Linux%20x64-55746b?style=flat-square">
   <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-555555?style=flat-square"></a>
 </p>
-<p align="center"><a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><strong>Download for Linux</strong></a> · <a href="https://github.com/yxt02/hongguo-drama-linux/issues">Report an issue</a></p>
+<p align="center"><a href="https://github.com/mantougg/hongguo-drama-linux/releases/latest"><strong>Download for Linux</strong></a> · <a href="https://github.com/mantougg/hongguo-drama-linux/issues">Report an issue</a></p>
 
-An independently maintained Linux desktop project by [yxt02](https://github.com/yxt02), with drama search, online playback, local downloads and resume support. Distributed for **Linux x86_64**, with the runtime and FFmpeg included.
+An independently maintained Linux desktop project by [mantougg](https://github.com/mantougg), with drama search, online playback, local downloads and resume support. Distributed for **Linux x86_64**, with the runtime and FFmpeg included.
 
 ## Install
 
-Download `hongguo-drama-<version>-linux-x64.tar.gz` from the [latest release](https://github.com/yxt02/hongguo-drama-linux/releases/latest). Extract it and run the launcher:
+Download `hongguo-drama-<version>-linux-x64.tar.gz` from the [latest release](https://github.com/mantougg/hongguo-drama-linux/releases/latest). Extract it and run the launcher:
 
 ```sh
 tar -xzf hongguo-drama-<version>-linux-x64.tar.gz
@@ -42,7 +42,7 @@ You can also run:
 hongguo --update --restart
 ```
 
-For older installations without the updater, extract the latest bundle and run `升级现有安装.sh`. It closes the old application and upgrades using the extracted bundle, without uninstalling or downloading it again.
+To migrate from another release channel, download the latest bundle from this repository and run `升级现有安装.sh` after extracting it. It closes and upgrades the existing application in place. Future updates use this repository.
 
 In-app updates support writable Linux x64 directory installations. Other package formats, including AppImage, require manual updates from the release page.
 
@@ -54,9 +54,10 @@ In-app updates support writable Linux x64 directory installations. Other package
 | Quality | Prefer the highest available App-source resolution, with explicit 1080p / 720p options |
 | Compatibility | Try the original first and convert to H.264 if decoding fails |
 | Resume | Keep separate episode and time positions for each drama and season |
-| Automatic cache | Retain the current episode and up to five episodes on each side |
+| Prefetch | Choose off, next episode or next two episodes and see the next episode's readiness in the episode list |
 | Downloads | Download unfinished episodes after the current one; skip completed, queued and locked episodes |
-| Playback | Auto-next, playback speed, fullscreen and picture controls |
+| Playback | Jump to an episode, see watched markers, resume the next season, and open the episode or info drawer in app fullscreen |
+| Danmaku | Show Hongguo comments at their timestamps, or switch to public episode comments |
 | Tray | Choose full exit or minimize-to-tray when closing the window |
 
 Resolution and availability depend on the provider. App-source failures prompt a retry rather than silently falling back to a lower-quality web source. H.264 conversion cannot turn low-resolution footage into HD.
@@ -100,17 +101,17 @@ Quitting closes background search windows and waits for download writes and tran
 - **Source or download errors:** check the network and proxy settings, then retry. Locked or unavailable content must be handled on the source platform.
 - **Launch problems:** run `红果短剧.sh` from the bundle root. The launcher handles Chromium sandbox compatibility on some distributions.
 
-Report reproducible problems in [Issues](https://github.com/yxt02/hongguo-drama-linux/issues), including version, distribution, steps and error messages. Remove personal information before sharing logs.
+Report reproducible problems in [Issues](https://github.com/mantougg/hongguo-drama-linux/issues), including version, distribution, steps and error messages. Remove personal information before sharing logs.
 
 ## Development and releases
 
-The current application version is **1.74.10**, restoring App playback through a shared anonymous device session and current direct video models. Related playback, catalog, search and media fixes were ported from upstream 4.2 while retaining Linux behavior. Validation includes 57 regression scripts, live samples from Hongguo/Hema/Xifan, packaging and a complete in-place upgrade check. See the [release notes](docs/release-1.74.10-linux.md) and [upstream sync record](docs/UPSTREAM_SYNC.md).
+See [Releases](https://github.com/mantougg/hongguo-drama-linux/releases/latest) for the current bundle and changelog. The [watching experience design](docs/linux-watching-experience-design.md) records verification of playback, prefetch, fullscreen and timeline danmaku.
 
 Build instructions, pinned media recovery and test setup are in [Linux development](docs/DEVELOPMENT.md). The Linux workflow tests and packages version changes before publishing the archive, source and checksums.
 
 ## Origin and license
 
-This project continues development from [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama). Earlier origins and modification notices are recorded in [NOTICE](NOTICE). Independent maintenance preserves the original license and attribution.
+This project continues development from [yxt02/hongguo-drama-linux](https://github.com/yxt02/hongguo-drama-linux), which is based on [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama). See [NOTICE](NOTICE) for project origins, licensing and modification notices.
 
 Code is licensed under [GPL-3.0](LICENSE). Bundled FFmpeg provenance, licensing and fixed checksums are documented in the [Linux media notice](build/ffmpeg/LINUX-NOTICE.txt) and [third-party notices](THIRD-PARTY-NOTICES.md).
 
@@ -118,4 +119,4 @@ This is an unofficial Linux client and is not affiliated with Hongguo.
 
 ## Playback recovery
 
-Transient anonymous device registration failures can be retried after 10 seconds without restarting. Playback model requests include signatures bound to the final host, query and request body. Empty responses allow one alternate official host attempt and at most one session refresh, shared across concurrent requests and rate limited to once per minute. Network, registration, quality and decoding errors remain distinct. Releases also require a live App source/download/decode/H.264/range smoke check before publication.
+When the App source returns an empty response, the player first tries the alternate host with the same session. The current episode and next playable episode can share a session renewal if both hosts return empty responses, within the existing request budget. Releases require a live App source, download, decode, H.264 and range smoke check before publication.

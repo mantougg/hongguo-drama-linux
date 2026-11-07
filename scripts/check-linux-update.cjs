@@ -20,7 +20,7 @@ async function bundle(root, version) {
 (async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'hongguo-update-test-'));
   try {
-    assert.equal(releasesApi('linux'), 'https://api.github.com/repos/yxt02/hongguo-drama-linux/releases/latest');
+    assert.equal(releasesApi('linux'), 'https://api.github.com/repos/mantougg/hongguo-drama-linux/releases/latest');
     assert.equal(availableRelease({ tag_name: 'v1.74.1-linux' }, '1.74.0', { platform: 'linux' }).version, '1.74.1');
     for (const tag of ['v1.74.0-linux', 'v1.73.9-linux', 'v1.75.0', 'v1.75.0-linux-beta']) assert.equal(availableRelease({ tag_name: tag }, '1.74.0', { platform: 'linux' }), null);
     assert.equal(availableRelease({ tag_name: 'v1.75.0-linux', prerelease: true }, '1.74.0', { platform: 'linux' }), null);
@@ -40,7 +40,7 @@ async function bundle(root, version) {
     assert.equal(u.expectedHash(digest + '  ' + release.name + '\n', release.name), digest);
     assert.throws(() => u.expectedHash(digest + '  ' + release.name + '\n' + digest + '  ' + release.name, release.name), /唯一/);
     const fakeRequest = (hash = digest) => ({ get: async (url, options) => {
-      assert.ok(url.startsWith('https://github.com/yxt02/hongguo-drama-linux/releases/download/v1.74.1-linux/'));
+      assert.ok(url.startsWith('https://github.com/mantougg/hongguo-drama-linux/releases/download/v1.74.1-linux/'));
       return url.endsWith('SHA256SUMS.txt') ? { data: hash + '  ' + release.name } : { data: Readable.from([data]), headers: { 'content-length': String(data.length) } };
     } });
     const downloadDir = await fs.mkdtemp(path.join(temp, 'download-'));

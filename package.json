@@ -2,6 +2,12 @@
   "name": "hongguo-downloader",
   "version": "1.74.11",
   "description": "红果短剧播放与下载",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mantougg/hongguo-drama-linux.git"
+  },
+  "homepage": "https://github.com/mantougg/hongguo-drama-linux",
+  "bugs": "https://github.com/mantougg/hongguo-drama-linux/issues",
   "main": "main.js",
   "license": "GPL-3.0",
   "scripts": {
@@ -43,7 +49,7 @@
     "esbuild": "0.21.5"
   },
   "build": {
-    "appId": "io.github.jackotom.hongguo-drama-mac",
+    "appId": "io.github.mantougg.hongguo-drama-linux",
     "productName": "红果短剧",
     "directories": {
       "output": "dist"

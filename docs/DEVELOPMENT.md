@@ -5,7 +5,7 @@
 ## 准备依赖
 
 ```sh
-git clone https://github.com/yxt02/hongguo-drama-linux.git
+git clone https://github.com/mantougg/hongguo-drama-linux.git
 cd hongguo-drama-linux
 npm ci --no-audit --no-fund
 node node_modules/electron/install.js
@@ -15,12 +15,11 @@ node node_modules/electron/install.js
 
 ## 固定媒体工具
 
-上游 FFmpeg 的 `latest` 归档会变化。为保持已验证的媒体工具不变，可从本项目固定的 1.74.6 包恢复 FFmpeg / FFprobe：
+发布与开发使用固定校验和的 FFmpeg / FFprobe。恢复脚本从本仓库的最新发行包提取对应二进制。仓库首次发布时，脚本使用带固定校验和的 Linux 上游 1.74.6 包作为引导。
 
 ```sh
-curl -fL --retry 3 -o /tmp/hongguo-base.tar.gz \
-  https://github.com/yxt02/hongguo-drama-linux/releases/download/v1.74.6-linux/hongguo-drama-1.74.6-linux-x64.tar.gz
-python3 scripts/restore-linux-media.py /tmp/hongguo-base.tar.gz
+mkdir -p work
+TMPDIR="$PWD/work" python3 scripts/restore-linux-media.py
 node scripts/setup-ffmpeg-linux.js
 ```
 

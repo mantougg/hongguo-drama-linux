@@ -189,7 +189,7 @@ async function runCli(args = process.argv.slice(2)) {
       if (!version || !option('--checksum')) throw new Error('本地更新需要版本号与校验文件');
       if (await sha256(archive) !== expectedHash(await fsp.readFile(option('--checksum'), 'utf8'), path.basename(archive))) throw new Error('本地安装包 SHA256 校验失败');
     } else {
-      console.log('正在检查 yxt02/hongguo-drama-linux ...'); const release = await latest(current);
+      console.log('正在检查 ' + FORK + ' ...'); const release = await latest(current);
       if (!release) { console.log('当前已是最新版本：' + current); return; }
       version = release.version; archive = await download(release, workdir, { progress: p => { if (p.percent % 10 === 0) console.log('下载更新 ' + p.percent + '%'); } });
     }

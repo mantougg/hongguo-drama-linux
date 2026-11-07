@@ -8,28 +8,28 @@
   <strong>中文</strong> · <a href="README.en.md">English</a>
 </p>
 <p align="center">
-  <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/yxt02/hongguo-drama-linux?style=flat-square"></a>
+  <a href="https://github.com/mantougg/hongguo-drama-linux/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/mantougg/hongguo-drama-linux?style=flat-square"></a>
   <img alt="Linux x64" src="https://img.shields.io/badge/platform-Linux%20x64-55746b?style=flat-square">
   <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-555555?style=flat-square"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><strong>下载 Linux 版</strong></a> ·
+  <a href="https://github.com/mantougg/hongguo-drama-linux/releases/latest"><strong>下载 Linux 版</strong></a> ·
   <a href="#一键更新">一键更新</a> ·
   <a href="#自动切季">自动切季</a> ·
-  <a href="https://github.com/yxt02/hongguo-drama-linux/issues">反馈问题</a>
+  <a href="https://github.com/mantougg/hongguo-drama-linux/issues">反馈问题</a>
 </p>
 
-由 [yxt02](https://github.com/yxt02) 维护的独立 Linux 桌面项目，提供短剧搜索、在线播放、本地下载和续播。面向 **Linux x86_64** 分发，FFmpeg 与运行时已包含在安装包中。
+由 [mantougg](https://github.com/mantougg) 维护的独立 Linux 桌面项目，提供短剧搜索、在线播放、本地下载和续播。面向 **Linux x86_64** 分发，FFmpeg 与运行时已包含在安装包中。
 
 ## 播放故障恢复
 
-匿名播放会话注册遇到临时错误，10 秒后可重新尝试，无需重启；播放请求按最终地址和正文签名；接口返回空响应时尝试一次会话更新和备用官方主机重连。并发播放、下载和预缓存共享会话，更新限频，避免反复请求。网络连接、接口拒绝、清晰度不足与媒体解码分别提示。App 最高可用画质和手动指定清晰度的规则保持不变。
+App 接口返回空响应时，先用同一会话尝试备用入口。当前集和下一可播集在主备均空时可共享一次会话更新，再按现有时间预算重试。失败后按限额退避，并区分取源、缓冲与解码问题。
 
 发布前除离线回归与升级检查，还会实网验证 App 取源、下载、解密、首帧解码、H.264 兼容转换和分段读取；抽查失败会阻止自动发布。
 
 ## 下载与安装
 
-在 [最新发行版](https://github.com/yxt02/hongguo-drama-linux/releases/latest) 下载：
+在 [最新发行版](https://github.com/mantougg/hongguo-drama-linux/releases/latest) 下载：
 
 ```text
 hongguo-drama-<版本号>-linux-x64.tar.gz
@@ -63,7 +63,7 @@ sha256sum --ignore-missing -c SHA256SUMS.txt
 hongguo --update --restart
 ```
 
-从尚未支持一键更新的旧版本升级：下载并解压新版，运行 **`升级现有安装.sh`**，自动关闭旧程序后替换，无需先卸载，也不重复下载安装包。
+首次从其他发行渠道迁移时，从本仓库下载并解压新版，运行 **`升级现有安装.sh`**。脚本关闭旧程序后原位升级，后续更新走本仓库。
 
 > 应用内更新支持可写的 Linux x64 完整目录安装。AppImage 等安装方式请从发行页手动更新。
 
@@ -75,9 +75,10 @@ hongguo --update --restart
 | 高清取源 | 默认优先 App 最高可用画质，也可指定 1080p / 720p |
 | 兼容播放 | 默认自动解码，遇到解码故障时转为 H.264 |
 | 接着上次看 | 每部剧、每一季分别保存集数和播放位置 |
-| 自动缓存 | 保留当前集及前后各 5 集，移出窗口的自动缓存会清理 |
+| 预缓存 | 关闭、仅下一集或后两集；选集显示下一可播集的准备状态 |
 | 批量下载 | “下载后续未完成集”只下载当前集之后的集数，跳过已完成、已排队和锁定集 |
-| 连续播放 | 支持自动下一集、倍速、全屏与画面调节 |
+| 连续播放 | 支持跳集定位、已看标记、跨季续播与应用内全屏抽屉 |
+| 弹幕 | 按播放位置显示红果时间轴弹幕，也可选本集公开评论 |
 | 托盘 | 可选择点 X 完全退出，或最小化到托盘继续运行 |
 
 实际清晰度与可播范围以来源返回为准。App 源失败时会提示重试，不自动切回网页低清源。转成 H.264 不会把低清素材变成高清。
@@ -130,18 +131,18 @@ Linux 默认尝试播放原片。需要转换时优先使用可用的 Intel VAAP
 
 **程序启动不了？** 请运行压缩包根目录的 `红果短剧.sh`。启动器会处理部分 Linux 发行版的 Chromium 沙箱兼容问题，不建议直接运行 `app/` 内的二进制。
 
-**如何反馈？** 到 [Issues](https://github.com/yxt02/hongguo-drama-linux/issues) 提供版本号、发行版、复现步骤和错误提示；附日志前请移除个人信息。
+**如何反馈？** 到 [Issues](https://github.com/mantougg/hongguo-drama-linux/issues) 提供版本号、发行版、复现步骤和错误提示；附日志前请移除个人信息。
 
 ## 开发与版本
 
-- 当前应用版本：**1.74.10**；恢复 App 取流，按模块同步原上游 4.2 的取源、目录、搜索与媒体修复。
-- 验证：57 项播放回归、三来源实网抽查、Linux 打包及完整原位更新检查通过。详见 [发行说明](docs/release-1.74.10-linux.md) 与 [上游同步记录](docs/UPSTREAM_SYNC.md)。
+- 最新安装包与版本变更见 [发行页](https://github.com/mantougg/hongguo-drama-linux/releases/latest)。
+- 连续追剧、预缓存和时间轴弹幕的验证见 [设计与验证记录](docs/linux-watching-experience-design.md)。
 - 从源码构建、媒体工具校验和测试方法见 [Linux 开发说明](docs/DEVELOPMENT.md)。
 - Linux 发布工作流在版本号更新后执行测试、打包和更新包检查，通过后发布安装包、源码及校验文件。
 
 ## 项目来源与许可
 
-本项目在 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) 的代码基础上持续开发；更早来源与修改声明见 [NOTICE](NOTICE)。独立维护不改变原有开源许可及署名。
+本项目从 [yxt02/hongguo-drama-linux](https://github.com/yxt02/hongguo-drama-linux) 的 Linux 版本继续开发。其桌面上游为 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama)。完整来源、许可与修改声明见 [NOTICE](NOTICE)。
 
 代码使用 [GPL-3.0](LICENSE)。内置 FFmpeg 的来源、许可与固定校验信息见 [Linux 媒体工具说明](build/ffmpeg/LINUX-NOTICE.txt)及[第三方声明](THIRD-PARTY-NOTICES.md)。
 

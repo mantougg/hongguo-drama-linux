@@ -1,4 +1,4 @@
-const FORK = 'yxt02/hongguo-drama-linux';
+const FORK = 'mantougg/hongguo-drama-linux';
 const UPSTREAM = 'jackotom/hongguo-drama';
 const releaseRepository = (platform = process.platform) => platform === 'linux' ? FORK : UPSTREAM;
 const releasesUrl = platform => 'https://github.com/' + releaseRepository(platform) + '/releases';
