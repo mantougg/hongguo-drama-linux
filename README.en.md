@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/app-icon-1.74.6.png" alt="Hongguo Drama Linux icon" width="132" height="132">
+  <img src="build/icon.svg" alt="Hongguo Drama Linux icon" width="132" height="132">
 </p>
 
 <h1 align="center">Hongguo Drama for Linux</h1>

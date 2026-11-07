@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/app-icon-1.74.6.png" alt="红果短剧 Linux 应用图标" width="132" height="132">
+  <img src="build/icon.svg" alt="红果短剧 Linux 应用图标" width="132" height="132">
 </p>
 
 <h1 align="center">红果短剧 Linux</h1>
