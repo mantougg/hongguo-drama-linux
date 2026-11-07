@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['package.json', '.github/workflows/linux.yml']
+    paths: ['package.json', '.github/workflows/linux.yml', 'scripts/setup-ffmpeg-linux.js', 'scripts/restore-linux-media.py']
 permissions:
   contents: write
 env:
