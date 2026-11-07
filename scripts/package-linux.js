@@ -149,9 +149,8 @@ function main() {
   fs.copyFileSync(path.join(root, 'build/linux-update.cjs'), path.join(stage, 'linux-update.cjs'));
   fs.chmodSync(path.join(stage, '更新红果短剧.sh'), 0o755);
   fs.chmodSync(path.join(stage, '升级现有安装.sh'), 0o755);
-  // Desktop entries need an on-disk icon; the app's own icon is inside the
-  // asar, so ship the source PNG next to the launcher for install.sh to use.
-  fs.copyFileSync(path.join(root, 'build', 'icon.png'), path.join(stage, 'icon.png'));
+  // Ship the SVG desktop icon and the PNG fallback next to the launcher.
+  for (const icon of ['icon.svg', 'icon.png']) fs.copyFileSync(path.join(root, 'build', icon), path.join(stage, icon));
   fs.chmodSync(path.join(stage, '红果短剧.sh'), 0o755);
   fs.chmodSync(path.join(stage, 'install.sh'), 0o755);
   writeUsage(stage);

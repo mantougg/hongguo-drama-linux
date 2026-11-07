@@ -38,13 +38,16 @@ cp -a "$HERE/红果短剧.sh" "$OPT_DIR/红果短剧.sh"
 cp -a "$HERE/更新红果短剧.sh" "$HERE/linux-update.cjs" "$OPT_DIR/"
 chmod +x "$OPT_DIR/红果短剧.sh" "$OPT_DIR/更新红果短剧.sh"
 
-# 桌面图标：用随包附带的 PNG，并装到安装目录内
-# （不能指向 $HERE，那会在解压目录删除后失效）
+# 将图标放在安装目录内，解压目录删除后仍可用。
 if [ -f "$HERE/icon.png" ]; then
     cp -a "$HERE/icon.png" "$OPT_DIR/icon.png"
 fi
 ICON="$OPT_DIR/icon.png"
 [ -f "$ICON" ] || ICON=hongguo-downloader
+if [ -f "$HERE/icon.svg" ]; then
+    cp -a "$HERE/icon.svg" "$OPT_DIR/icon.svg"
+    ICON="$OPT_DIR/icon.svg"
+fi
 
 # 命令行入口
 ln -sf "$OPT_DIR/红果短剧.sh" "$BIN_DIR/$BIN_NAME"
@@ -60,7 +63,7 @@ Exec="$OPT_DIR/红果短剧.sh" %U
 Icon=$ICON
 Terminal=false
 Categories=AudioVideo;Video;Player;
-StartupWMClass=hongguo-downloader
+StartupWMClass=hongguo-drama
 Keywords=短剧;视频;播放;下载;
 EOF
 

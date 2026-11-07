@@ -62,6 +62,13 @@ assert.ok(plainExec > sandboxExec, '启动器必须保留不加 --no-sandbox 的
 
 // ---- install script -------------------------------------------------------
 const installer = read('scripts/install-linux.sh');
+const { desktopName, build } = JSON.parse(read('package.json'));
+const desktopId = desktopName.replace(/\.desktop$/, '');
+assert.equal(desktopName, 'hongguo-drama.desktop');
+assert.equal(build.linux.desktop.entry.StartupWMClass, desktopId);
+assert.ok(installer.includes(`$DESKTOP_DIR/${desktopName}`));
+assert.ok(installer.includes(`StartupWMClass=${desktopId}\n`));
+assert.ok(installer.includes('ICON="$OPT_DIR/icon.svg"'));
 
 assert.match(
   installer,
@@ -118,6 +125,7 @@ try {
 
 // ---- packaging script ships the icon --------------------------------------
 const packager = read('scripts/package-linux.js');
+assert.match(packager, /icon\.svg/, '发行目录必须附带 SVG 桌面图标');
 assert.match(
   packager,
   /icon\.png/,
