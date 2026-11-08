@@ -30,9 +30,12 @@ function readVersion(bundle) {
     return pkg.version;
   } finally { fs.closeSync(fd); }
 }
-function validateBundle(bundle, version) {
+// 旧安装缺少 ByteVC2 辅助程序也必须能升级；新包自身则必须带齐它。
+const BASE_COMPONENTS = ['app/hongguo-downloader', '红果短剧.sh', 'app/resources/bin/ffmpeg', 'app/resources/bin/ffprobe'];
+const FULL_COMPONENTS = [...BASE_COMPONENTS, 'app/resources/bin/librempeg'];
+function validateBundle(bundle, version, components = BASE_COMPONENTS) {
   if (!fs.lstatSync(bundle).isDirectory() || fs.lstatSync(bundle).isSymbolicLink()) throw new Error('应用目录无效');
-  for (const name of ['app/hongguo-downloader', '红果短剧.sh', 'app/resources/bin/ffmpeg', 'app/resources/bin/ffprobe']) {
+  for (const name of components) {
     const file = path.join(bundle, name), stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111)) throw new Error('缺少可执行组件：' + name);
   }
@@ -106,7 +109,7 @@ async function unpack(archive, workdir, version, { signal, execute = exec } = {}
   }
   const stage = path.join(workdir, 'unpack'); await fsp.mkdir(stage, { mode: 0o700 });
   await execute('tar', ['-xzf', archive, '-C', stage, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore'], options);
-  const root = path.join(stage, ROOT); validateBundle(root, version); return root;
+  const root = path.join(stage, ROOT); validateBundle(root, version, FULL_COMPONENTS); return root;
 }
 function alive(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } }
 async function waitForExit(pid, timeout = 120000) {
@@ -171,7 +174,7 @@ async function refreshDesktopEntry(target) {
 }
 
 async function install(root, target, version, { rename = fsp.rename } = {}) {
-  target = path.resolve(target); validateBundle(target); validateBundle(root, version);
+  target = path.resolve(target); validateBundle(target); validateBundle(root, version, FULL_COMPONENTS);
   if (target === path.parse(target).root || path.resolve(root).startsWith(target + path.sep)) throw new Error('不能从安装目录内部替换自身');
   const parent = path.dirname(target), lock = target + '.update-lock', backup = target + '.previous';
   // Copy to the destination filesystem before any rename; /tmp may be a different mount.
@@ -179,7 +182,7 @@ async function install(root, target, version, { rename = fsp.rename } = {}) {
   let locked = false;
   try {
     await fsp.mkdir(lock, { mode: 0o700 }); locked = true;
-    await fsp.cp(root, path.join(staging, 'next'), { recursive: true }); validateBundle(path.join(staging, 'next'), version);
+    await fsp.cp(root, path.join(staging, 'next'), { recursive: true }); validateBundle(path.join(staging, 'next'), version, FULL_COMPONENTS);
     if (fs.existsSync(backup)) { validateBundle(backup); await fsp.rm(backup, { recursive: true }); }
     await rename(target, backup);
     try { await rename(path.join(staging, 'next'), target); }
@@ -233,4 +236,4 @@ async function runCli(args = process.argv.slice(2)) {
     if (args.includes('--restart')) restart(target); return result;
   } finally { await fsp.rm(workdir, { recursive: true, force: true }); }
 }
-module.exports = { readVersion, validateBundle, detectBundle, expectedHash, sha256, latest, download, unpack, install, waitForExit, runningProcesses, closeRunning, waitForTargetExit, runJob, runCli, requestOptions };
+module.exports = { readVersion, validateBundle, detectBundle, expectedHash, sha256, latest, download, unpack, install, waitForExit, runningProcesses, closeRunning, waitForTargetExit, runJob, runCli, requestOptions, BASE_COMPONENTS, FULL_COMPONENTS };

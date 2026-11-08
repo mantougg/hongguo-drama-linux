@@ -122,7 +122,7 @@ const checks = [
     for (const [rows, code, message] of [
       [{ one: { codec_type: 'bytevc1', width: 640, height: 360, definition: '1080p', main_url: media('low') } }, 'QUALITY_UNAVAILABLE', /640×360/],
       [{ one: { codec_type: 'h264', definition: '1080p', main_url: media('unknown') } }, 'RESOLUTION_UNKNOWN', /视频尺寸/],
-      [{ one: { codec_type: 'bytevc2', width: 1920, height: 1080, main_url: media('unsupported') } }, 'UNSUPPORTED_CODEC', /暂不支持的编码/],
+      [{ one: { codec_type: 'bytevc2', width: 1920, height: 1080, main_url: media('unsupported') } }, 'UNSUPPORTED_CODEC', /暂不能转换/],
       [{}, 'NO_PLAYABLE_SOURCE', /暂未取得有效片源/],
     ]) {
       const app = appFixture(rows), f = load('hongguo.js', { './app-source': app });

@@ -25,7 +25,7 @@ function encodedKey() {
   raw[0] = 48 ^ raw[1] ^ raw[2];
   return raw.toString('base64');
 }
-function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', media = 'https://v3-reading.qznovelvod.com/video.mp4', redirect = '', malformedKey = false, videoList = null, encrypted = true } = {}) {
+function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', media = 'https://v3-reading.qznovelvod.com/video.mp4', redirect = '', malformedKey = false, videoList = null, encrypted = true, model = null, platform = 'linux' } = {}) {
   const calls = [];
   const seed = Buffer.alloc(16, 7);
   const constants = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
@@ -58,7 +58,7 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       return { status: 200, headers: {}, data: JSON.stringify({ code: 0, data: { '999': model, ...(wrongVid ? {} : { '11': model }) } }) };
     }
     if (redirect) return { status: 302, headers: { location: redirect }, data: '' };
-    return { status: 200, headers: {}, data: JSON.stringify({ video_info: { data: { key_seed: encrypted ? seed.toString('base64') : null, video_list: videoList || {
+    return { status: 200, headers: {}, data: JSON.stringify({ video_info: { data: { ...(model || {}), key_seed: encrypted ? seed.toString('base64') : null, video_list: videoList || {
       bad: { main_url: media, codec_type: 'bytevc2', quality_desc: '2160P', spade_a: encodedKey() },
       good: { main_url: encryptedUrl, codec_type: 'h264', quality_desc: '720P', spade_a: malformedKey ? 'bad' : encodedKey() },
     } } } }) };
@@ -69,6 +69,7 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       if (name === './playback-device') return { getPlaybackDevice: async () => playbackDevice };
       if (name === './sm3') return require(path.join(nativeDir, 'sm3'));
       if (name === './download-quality') return require(path.join(nativeDir, 'download-quality'));
+      if (name === 'node:process') return { platform, arch: 'x64' };
       if (name === 'node:crypto') return { ...crypto, createHash(name, ...args) {
         assert.notEqual(name.toLowerCase(), 'sm3', 'must not depend on OpenSSL SM3');
         return crypto.createHash(name, ...args);
@@ -94,6 +95,13 @@ function nativeFixture() {
 }
 const mediaUrl = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;
 const appRows = videoList => fixture({ videoList, encrypted: false }).fetch('11');
+// 完整 ByteVC2 候选需要模型自带媒体标识与完整时长（设计文档第 1 节）。
+const convertibleModel = { video_id: '7703760439540190233', video_duration: 46.8 };
+const appModel = (videoList, fetchOptions = {}, fixtureOptions = {}) =>
+  fixture({ videoList, encrypted: false, model: convertibleModel, ...fixtureOptions }).fetch('11', fetchOptions);
+const bytevc2Row = (name, { width = 1080, height = 1920, key = true } = {}) => ({
+  main_url: mediaUrl(name), codec_type: 'bytevc2', quality_desc: `${width}P`, width, height, ...(key ? { spade_a: encodedKey() } : {}),
+});
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 const checks = [
@@ -119,6 +127,59 @@ const checks = [
     const result = await appRows({ hd: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '1080P', width: 1080, height: 1920 },
       sd: { main_url: mediaUrl('avc'), codec_type: 'h264', quality_desc: '720P', width: 720, height: 1280 } });
     assert.equal(result.url, mediaUrl('hevc'));
+  }],
+  ['ByteVC2 stays behind compatible originals in auto mode even at a larger size', async () => {
+    const result = await appModel({ hevc: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '720P', width: 720, height: 1280 },
+      vc2: bytevc2Row('vc2-1080') });
+    assert.equal(result.codec, 'hevc');
+    assert.ok(result.variants.every(item => item.codec !== 'bytevc2'));
+  }],
+  ['ByteVC2 replaces unusable compatible metadata only on a supported platform', async () => {
+    const list = { hevc: { main_url: 'https://example.test/video.mp4', codec_type: 'hevc', width: 1080, height: 1920 },
+      vc2: bytevc2Row('convertible') };
+    assert.equal((await appModel(list)).codec, 'bytevc2');
+    await assert.rejects(appModel({ vc2: list.vc2 }, {}, { platform: 'darwin' }), error => error.code === 'UNSUPPORTED_CODEC');
+  }],
+  ['ByteVC2-only episodes select the convertible tier with identity, duration and key', async () => {
+    const result = await appModel({ vc2: bytevc2Row('vc2-main'),
+      same: { ...bytevc2Row('vc2-backup'), main_url: '', backup_url: mediaUrl('vc2-backup') },
+      small: bytevc2Row('vc2-720', { width: 720, height: 1280 }) });
+    assert.equal(result.codec, 'bytevc2');
+    assert.equal(result.url, mediaUrl('vc2-main'));
+    assert.equal(result.width, 1080); assert.equal(result.height, 1920);
+    assert.equal(result.duration, 46.8);
+    assert.equal(result.contentKey, keyHex);
+    assert.deepEqual([...result.variants].map(item => item.url).sort(), [mediaUrl('vc2-backup'), mediaUrl('vc2-main')].sort(),
+      'same-tier ByteVC2 backups share one candidate group');
+  }],
+  ['unencrypted ByteVC2 candidates convert through the same path without a key', async () => {
+    const plain = bytevc2Row('vc2-plain', { key: false });
+    await assert.rejects(appModel({ vc2: plain }), error => error.code === 'INVALID_RESPONSE');
+    const result = await appModel({ vc2: { ...plain, encrypt: false } });
+    assert.equal(result.codec, 'bytevc2');
+    assert.equal(result.contentKey, null);
+    assert.equal(result.duration, 46.8);
+  }],
+  ['fixed quality first tries compatible originals, then ByteVC2 at the same size floor', async () => {
+    const compatOnly = await appModel({ hevc: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '1080P', width: 1080, height: 1920 },
+      vc2: bytevc2Row('vc2-1080') }, { quality: '1080p' });
+    assert.equal(compatOnly.codec, 'hevc');
+    const convertible = await appModel({ hevc: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '720P', width: 720, height: 1280 },
+      vc2: bytevc2Row('vc2-1080') }, { quality: '1080p' });
+    assert.equal(convertible.codec, 'bytevc2');
+    assert.equal(convertible.url, mediaUrl('vc2-1080'));
+  }],
+  ['ByteVC2 below the requested quality keeps the existing clarity error', async () => {
+    await assert.rejects(appModel({ vc2: bytevc2Row('vc2-720', { width: 720, height: 1280 }) }, { quality: '1080p' }),
+      error => error.code === 'QUALITY_UNAVAILABLE' && error.width === 720 && error.height === 1280);
+  }],
+  ['unconfirmable ByteVC2 and unknown codecs keep failing with an explicit reason', async () => {
+    await assert.rejects(appModel({ vc2: bytevc2Row('vc2-noid') }, {}, { model: { video_id: '', video_duration: 0 } }),
+      error => error.code === 'UNSUPPORTED_CODEC' && /ByteVC2/.test(error.message));
+    await assert.rejects(appModel({ vc2: bytevc2Row('vc2-noduration') }, {}, { model: { video_id: '7703760439540190233', video_duration: 0 } }),
+      error => error.code === 'UNSUPPORTED_CODEC');
+    await assert.rejects(appRows({ alien: { main_url: mediaUrl('alien'), codec_type: 'av01', quality_desc: '1080P', width: 1080, height: 1920 } }),
+      error => error.code === 'UNSUPPORTED_CODEC');
   }],
   ['App invalid or missing main URL keeps validated same-stream backup', async () => {
     for (const main_url of ['', 'https://127.0.0.1/private', 'https://v3-reading.qznovelvod.com.attacker.test/video', 'http://v3-reading.qznovelvod.com/video']) {

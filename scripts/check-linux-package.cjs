@@ -137,4 +137,31 @@ assert.match(
   '打包脚本必须把启动器放进发行目录'
 );
 
-console.log('PASS Linux packaging: 启动器符号链接解析、条件沙箱、安装目录图标、免 root 安装与打包完整性');
+// ---- ByteVC2 helper ships with the package --------------------------------
+const linuxResources = JSON.parse(read('package.json')).build.linux.extraResources
+  .find(entry => entry.from === 'build/ffmpeg/linux-x64');
+assert.ok(linuxResources, 'Linux 包必须从 build/ffmpeg/linux-x64 携带媒体工具');
+for (const binary of ['librempeg', 'librempeg-vaapi']) {
+  assert.ok(linuxResources.filter.includes(binary), `Linux 包必须包含 ByteVC2 辅助程序 ${binary}`);
+}
+const noticeResources = JSON.parse(read('package.json')).build.linux.extraResources
+  .flatMap(entry => entry.filter || []);
+const coveredByFilter = (name) => noticeResources.some(pattern =>
+  new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$').test(name));
+for (const license of ['LIBREMPEG-NOTICE.txt', 'LIBREMPEG-COPYING.GPLv3', 'LIBREMPEG-COPYING.AGPLv3',
+  'LIBREMPEG-LICENSE.md', 'LIBREMPEG-X264-LICENSE.txt']) {
+  assert.ok(coveredByFilter(license), `Linux 包必须包含 Librempeg 许可文件 ${license}`);
+  assert.ok(fs.existsSync(path.join(root, 'build/ffmpeg', license)), `${license} 必须随源码保留`);
+}
+
+const helperBuilder = read('scripts/build-librempeg-source.sh');
+assert.match(helperBuilder, /cb1f8f3eef84999e61b27e2d44664858179bc240/, '辅助程序必须固定 Librempeg 源码版本');
+assert.match(helperBuilder, /b35605ace3ddf7c1a5d67a2eb553f034aef41d55/, '辅助程序必须固定 x264 源码版本');
+assert.match(helperBuilder, /corresponding-source\.tar\.gz/, '构建脚本必须生成对应源码归档');
+assert.match(helperBuilder, /--enable-decoder=bvc2,vvc,aac/, '构建必须启用 bvc2 解码');
+
+const setup = read('scripts/setup-ffmpeg-linux.js');
+assert.match(setup, /librempeg/, '打包前必须校验 ByteVC2 辅助程序');
+assert.match(setup, /不得依赖 libva\/libdrm/, 'CPU 辅助程序不得依赖图形栈');
+
+console.log('PASS Linux packaging: 启动器符号链接解析、条件沙箱、安装目录图标、免 root 安装、ByteVC2 辅助程序与许可完整性');

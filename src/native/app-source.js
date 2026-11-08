@@ -6,6 +6,7 @@
 // bounded HTTPS transport; exact episode matching; supported codec selection.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
+const { platform, arch } = require('node:process');
 const { getPlaybackDevice, requestFastDeviceUpdate, pauseFastDeviceUpdates } = require('./playback-device');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
@@ -443,7 +444,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
     if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
     const streams = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
-        const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'h265_hvc1', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : 2;
+        const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'h265_hvc1', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : codec === 'bytevc2' ? 2 : 3;
         const quality = str(item.quality_desc || item.definition || item.height || item.vheight || item.video_meta?.definition);
         const pixels = Number(quality.match(/\d+/)?.[0] || 0);
         const meta = item.video_meta || {};
@@ -452,57 +453,77 @@ async function fetchAppPlayUrl(vid, options = {}) {
         return { item, codec, codecRank, quality, pixels, width, height };
     });
     const compatible = streams.filter(row => row.codecRank < 2);
-    const rows = compatible.filter(row => meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
+    // ByteVC2 must be confirmed by this model itself: media identity, a finite
+    // positive full duration and real dimensions, otherwise it stays unusable.
+    const modelDuration = Number(info.video_duration);
+    const modelUsable = typeof info.video_id === 'string' && info.video_id.trim() && Number.isFinite(modelDuration) && modelDuration > 0;
+    const supportsBytevc2 = platform === 'linux' && arch === 'x64';
+    const convertible = streams.filter(row => supportsBytevc2 && row.codecRank === 2 && modelUsable && row.width > 0 && row.height > 0)
+        .map(row => ({ ...row, duration: modelDuration }));
+    const rankRows = group => group.filter(row => meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
         ? (options.preferQuality !== false
             ? Math.min(b.width, b.height) - Math.min(a.width, a.height) || b.width * b.height - a.width * a.height || a.codecRank - b.codecRank
             : a.codecRank - b.codecRank || b.pixels - a.pixels)
         : Math.min(a.width, a.height) - Math.min(b.width, b.height) || a.codecRank - b.codecRank);
-    if (!rows.length) {
+    const groups = [rankRows(compatible), rankRows(convertible)];
+    if (groups.every(rows => !rows.length)) {
         if (!streams.length) throw Object.assign(new Error(`本集未返回可用的视频流（所选清晰度 ${requestedQuality}）`), { code: 'NO_PLAYABLE_SOURCE' });
-        if (!compatible.length) throw Object.assign(new Error(`本集仅返回暂不支持的编码（所选清晰度 ${requestedQuality}）`), { code: 'UNSUPPORTED_CODEC' });
-        const measured = compatible.filter(row => row.width > 0 && row.height > 0)
+        if (!compatible.length && !convertible.length) throw Object.assign(new Error(
+            supportsBytevc2 && streams.some(row => row.codecRank === 2)
+                ? `本集 ByteVC2 片源缺少可确认的媒体标识、完整时长或实际尺寸（所选清晰度 ${requestedQuality}），暂不能转换`
+                : `本集仅返回暂不支持的编码（所选清晰度 ${requestedQuality}）`), { code: 'UNSUPPORTED_CODEC' });
+        const measured = [...compatible, ...convertible].filter(row => row.width > 0 && row.height > 0)
             .sort((a, b) => Math.min(b.width, b.height) - Math.min(a.width, a.height));
         throw Object.assign(new Error(`本集暂无尺寸可确认且满足 ${requestedQuality} 的片源，未降级`), measured.length
             ? { code: 'QUALITY_UNAVAILABLE', width: measured[0].width, height: measured[0].height }
             : { code: 'RESOLUTION_UNKNOWN' });
     }
     let lastError;
-    const variants = [];
-    const seen = new Set();
-    // Keep the highest resolution in auto mode; alternate CDNs/codecs may not lower it.
-    const best = rows[0];
-    const selectedRows = requestedQuality === 'auto'
-        ? rows.filter(row => best.width && best.height
-            ? Math.min(row.width, row.height) === Math.min(best.width, best.height) && row.width * row.height === best.width * best.height
-            : row.pixels === best.pixels)
-        : rows;
-    for (const selected of selectedRows) {
-        try {
-            const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
-            if (inline && !spade && ![false, 0, '0', 'false'].includes(selected.item.encrypt_info?.encrypt)) {
-                throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
-            }
-            const key = spade ? deriveContentKey(spade) : null;
-            for (const candidate of [selected.item.main_url, selected.item.backup_url, ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
-                if (typeof candidate !== 'string' || !candidate) continue;
-                try {
-                    const media = info.key_seed
-                        ? decryptSpadeUrl(candidate, Buffer.from(info.key_seed, 'base64'))
-                        : cleanUrl(candidate);
-                    const url = checkedUrl(media, ['qznovelvod.com', 'fqnovelvod.com', 'douyinvod.com']);
-                    const contentKey = key ? key.toString('hex') : null;
-                    const identity = `${url}:${contentKey || ''}`;
-                    if (seen.has(identity)) continue;
-                    seen.add(identity);
-                    variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
-                        // App video CDN rejects browser Referer headers (HTTP 403).
-                        userAgent: inline ? PLAYBACK_UA : VIDEO_UA, omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
-                        width: selected.width, height: selected.height });
-                } catch (error) { lastError = error; }
-            }
-        } catch (error) { lastError = error; }
+    // A compatible candidate must pass URL and encryption checks before it can
+    // prevent the fallback to ByteVC2.
+    for (const rows of groups) {
+        if (!rows.length) continue;
+        const variants = [];
+        const seen = new Set();
+        // Keep the highest resolution in auto mode; alternate CDNs/codecs may not lower it.
+        const best = rows[0];
+        const selectedRows = requestedQuality === 'auto'
+            ? rows.filter(row => best.width && best.height
+                ? Math.min(row.width, row.height) === Math.min(best.width, best.height) && row.width * row.height === best.width * best.height
+                : row.pixels === best.pixels)
+            : rows;
+        for (const selected of selectedRows) {
+            try {
+                const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
+                const encrypted = selected.item.encrypt_info?.encrypt ?? selected.item.encrypt;
+                if (!spade && (inline || selected.codec === 'bytevc2') && ![false, 0, '0', 'false'].includes(encrypted)) {
+                    throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
+                }
+                const key = spade ? deriveContentKey(spade) : null;
+                for (const candidate of [selected.item.main_url, selected.item.backup_url, ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
+                    if (typeof candidate !== 'string' || !candidate) continue;
+                    try {
+                        const media = info.key_seed
+                            ? decryptSpadeUrl(candidate, Buffer.from(info.key_seed, 'base64'))
+                            : cleanUrl(candidate);
+                        const url = checkedUrl(media, ['qznovelvod.com', 'fqnovelvod.com', 'douyinvod.com']);
+                        const contentKey = key ? key.toString('hex') : null;
+                        const identity = `${url}:${contentKey || ''}`;
+                        if (seen.has(identity)) continue;
+                        seen.add(identity);
+                        variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
+                            // App video CDN rejects browser Referer headers (HTTP 403).
+                            userAgent: inline ? PLAYBACK_UA : VIDEO_UA, omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
+                            width: selected.width, height: selected.height,
+                            // ByteVC2 candidates are converted to H.264 before use; the
+                            // verified full duration drives conversion progress checks.
+                            ...(selected.codec === 'bytevc2' ? { duration: selected.duration } : {}) });
+                    } catch (error) { lastError = error; }
+                }
+            } catch (error) { lastError = error; }
+        }
+        if (variants.length) return { ...variants[0], variants, recovery: { route: recovery.route, sessionUpdated: recovery.sessionUpdated } };
     }
-    if (variants.length) return { ...variants[0], variants, recovery: { route: recovery.route, sessionUpdated: recovery.sessionUpdated } };
     throw lastError?.code === 'SECURITY_BLOCKED' ? lastError
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE' });
 }

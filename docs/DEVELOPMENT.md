@@ -20,8 +20,12 @@ node node_modules/electron/install.js
 ```sh
 mkdir -p work
 TMPDIR="$PWD/work" python3 scripts/restore-linux-media.py
+scripts/build-librempeg-source.sh "$PWD/work/librempeg-build" linux-x64
+install -m 755 work/librempeg-build/artifacts/bin/librempeg build/ffmpeg/linux-x64/librempeg
 node scripts/setup-ffmpeg-linux.js
 ```
+
+ByteVC2 辅助程序从固定源码构建，需要 C 编译器、Make、pkg-config 和 NASM。可选的 `linux-x64-vaapi` 构建还需要 libva 和 libdrm 的开发包。 [ByteVC2 构建与验收](linux-bytevc2-playback-design.md)
 
 恢复脚本核对整个归档和两个二进制的固定 SHA256，不运行旧应用。具体来源、许可证和校验值见 [LINUX-NOTICE.txt](../build/ffmpeg/LINUX-NOTICE.txt)。
 

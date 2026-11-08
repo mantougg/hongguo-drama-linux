@@ -1,0 +1,40 @@
+Librempeg 辅助组件说明（ByteVC2 解码）
+====================================
+
+本目录下的 `librempeg` 与可选的 `librempeg-vaapi` 是为 ByteVC2（BVC2/VVC 系）编码
+片源单独构建的解码辅助程序，仅用于把 ByteVC2 完整分集转换为 H.264；常规媒体的
+解封装、校验与兼容转码仍使用同目录的 FFmpeg/FFprobe（见 LINUX-NOTICE.txt）。
+
+固定源码
+--------
+* Librempeg 上游 commit cb1f8f3eef84999e61b27e2d44664858179bc240
+  （tarball SHA256 fd965e6ef9f745af96142cf118d7c2aa0dce906225c9d3cd2ef19e0221723813）
+* x264 上游 commit b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+  （源码 tarball SHA256 df62afece4eecef8ddf196f115dfec6e936a21b04ec2117a0f4e412de29b20e5）
+
+从固定源码构建：
+    scripts/build-librempeg-source.sh <构建目录> linux-x64 [并行数]        # CPU 版
+    scripts/build-librempeg-source.sh <构建目录> linux-x64-vaapi [并行数]  # 核显加速版（可选）
+
+构建脚本会核对两个压缩包的 SHA256，产出二进制并生成
+`librempeg-cb1f8f3-x264-b35605a-<target>-corresponding-source.tar.gz` 对应源码归档；
+正式发布时将该归档随发行产物一并上传。
+
+能力差异
+--------
+* `librempeg`：仅启用 bvc2/vvc/aac 解码、libx264/aac 编码与 file/pipe 协议；
+  x264 以静态库链入，运行时只依赖 glibc，不需要任何图形栈。
+* `librempeg-vaapi`：在相同 CPU 解码之上增加 h264_vaapi 编码与
+  hwupload/scale_vaapi 滤镜，动态链接系统 libva/libdrm。缺少 libva、DRM 节点
+  不可用或驱动初始化失败时，探测失败并回退 `librempeg`，CPU 路径不受影响。
+  libva 与 libdrm 采用 MIT 许可，按 LGPL/GPL 组合分发的义务见其源码包。
+
+许可
+----
+随二进制分发的许可正文：
+* LIBREMPEG-COPYING.GPLv3、LIBREMPEG-COPYING.AGPLv3、LIBREMPEG-LICENSE.md
+  （来自 Librempeg 源码；FFmpeg 历史部分为 LGPL/GPL 组合，启用 libx264 后整体按
+  GPL-v3-or-later 提供，`--enable-version3` 同时引入 AGPL-v3 选项文本）
+* LIBREMPEG-X264-LICENSE.txt（x264，GPL-2.0-or-later）
+
+按 GPL 再分发本包时，请一并提供上述许可文本与对应源码归档。

@@ -651,6 +651,9 @@ function DownloadManager({ onNavigate, active = true }) {
                     {task.status === 'downloading' && task.totalBytes > 0 && (
                       <span className="dm-size">{fmtBytes(task.receivedBytes)} / {fmtBytes(task.totalBytes)}</span>
                     )}
+                    {task.status === 'downloading' && (task.stage === 'transcoding' || task.stage === 'queued') && (
+                      <span className="dm-size">{task.stage === 'queued' ? '等待转码' : `正在转码 ${Number.isFinite(task.stagePercent) ? task.stagePercent : 0}%`}</span>
+                    )}
                     {task.status === 'failed' && task.error && <span className="dm-error">{task.error}</span>}
                   </div>
                   {(task.status === 'downloading' || task.status === 'pending') && (

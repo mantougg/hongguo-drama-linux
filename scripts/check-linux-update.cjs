@@ -10,7 +10,8 @@ const u = require('../src/native/linux-update');
 const { availableRelease, releasesApi } = require('../src/native/app-update');
 async function bundle(root, version) {
   await fs.mkdir(path.join(root, 'app/resources/bin'), { recursive: true });
-  for (const name of ['app/hongguo-downloader', '红果短剧.sh', 'app/resources/bin/ffmpeg', 'app/resources/bin/ffprobe']) {
+  // 新包必须带 ByteVC2 辅助程序；本夹具构造的是待安装的新发行包。
+  for (const name of ['app/hongguo-downloader', '红果短剧.sh', 'app/resources/bin/ffmpeg', 'app/resources/bin/ffprobe', 'app/resources/bin/librempeg']) {
     await fs.writeFile(path.join(root, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   }
   const source = await fs.mkdtemp(path.join(path.dirname(root), 'asar-'));

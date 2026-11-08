@@ -12,13 +12,14 @@ const source = path.resolve(__dirname, '../main.js'), req = createRequire(source
 const roots = [];
 const tick = () => new Promise(r => setImmediate(r));
 const defer = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
-function load(directory) {
+function load(directory, { playInfo = null } = {}) {
   const root = directory || fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-window-'));
   if (!roots.includes(root)) roots.push(root);
   const handlers = {}, events = [], metrics = { transfers: 0, probes: 0, sources: [], hls: 0 };
   const app = new EventEmitter();
   Object.assign(app, { getPath: () => root, getVersion: () => 'test', commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
-  const native = { fetchPlayUrlSingle: async (vid, sid, options) => { metrics.sources.push(options); return { vid, source: 'app', url: 'https://fixture.invalid/' + vid + '/' + options.quality, codec: 'hevc' }; } };
+  const native = { fetchPlayUrlSingle: async (vid, sid, options) => { metrics.sources.push(options);
+    return playInfo ? { ...playInfo, vid } : { vid, source: 'app', url: 'https://fixture.invalid/' + vid + '/' + options.quality, codec: 'hevc' }; } };
   const context = vm.createContext({ require: n => n === 'electron' ? { app, ipcMain: { handle: (n, f) => handlers[n] = f }, protocol: { registerSchemesAsPrivileged() {} } }
     : n === './src/native/hongguo' ? native : n === './src/store' ? {} : req(n), __dirname: path.dirname(source), process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout, console });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context, { filename: source });

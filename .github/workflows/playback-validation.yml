@@ -18,6 +18,9 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           TMPDIR="$RUNNER_TEMP" python3 scripts/restore-linux-media.py --repository "$GITHUB_REPOSITORY"
+          sudo apt-get update -qq && sudo apt-get install -y -qq nasm
+          scripts/build-librempeg-source.sh "$RUNNER_TEMP/librempeg-build" linux-x64 "$(nproc)"
+          install -m 755 "$RUNNER_TEMP/librempeg-build/artifacts/bin/librempeg" build/ffmpeg/linux-x64/librempeg
           node scripts/setup-ffmpeg-linux.js
       - name: Playback regression and frontend build
         run: |

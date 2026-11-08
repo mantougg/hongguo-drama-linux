@@ -30,6 +30,7 @@ const { normalizeDownloadQuality, meetsDownloadQuality } = require('./src/native
 const { decryptInWorker } = require('./src/native/decrypt-worker.cjs');
 const playbackCache = require('./src/native/playback-cache');
 const { pickPlaybackVaapi } = require('./src/native/playback-vaapi');
+const { convertBytevc2, CONVERSION_PRIORITIES } = require('./src/native/bytevc2');
 const store = require('./src/store');
 const watchHistory = require('./src/native/watch-history');
 const { fitWindowBounds } = require('./src/native/window-layout');
@@ -762,7 +763,24 @@ async function executeHongguoDownload(task) {
       await pipeline(response.data, writer);
       source.token.throwIfRequested();
       if (!received || (totalLength && received !== totalLength)) throw mediaTransferError('视频下载不完整，请重试');
-      if (playInfo.contentKey) {
+      if (playInfo.codec === 'bytevc2') {
+        // ByteVC2 下载共用同一转换队列；密钥在解码进程内一并使用。
+        const convertedPath = tmpPath + '.h264';
+        const stage = (name, seconds, duration) => sendToRenderer('download-progress', { id, progress: task.progress,
+          receivedBytes: received, totalBytes: totalLength, stage: name,
+          ...(Number(duration) > 0 ? { stagePercent: Math.max(0, Math.min(99, Math.floor(seconds / duration * 100))) } : {}) });
+        try {
+          const converted = await convertBytevc2ToH264(tmpPath, convertedPath, playInfo, {
+            cancelToken: source.token, quality, getPriority: () => CONVERSION_PRIORITIES.download,
+            onProgress: (seconds, duration) => stage('transcoding', seconds, duration),
+            onPhase: phase => stage(phase, 0, Number(playInfo.duration)),
+          });
+          task.actualQuality = converted.verified.actualQuality;
+          source.token.throwIfRequested();
+          publishDownloadFile(convertedPath, finalPath);
+        } finally { try { fs.unlinkSync(convertedPath); } catch (_) {} }
+        fs.unlinkSync(tmpPath);
+      } else if (playInfo.contentKey) {
         const decodedPath = tmpPath + '.decoded';
         try {
           await decryptContentKeyFile(tmpPath, decodedPath, playInfo.contentKey, { cancelToken: source.token });
@@ -1361,14 +1379,14 @@ ipcMain.handle('dismissed-count', async () => seriesRegistry.filter((s) => s.dis
 // ===== 一键合并（ffmpeg concat 流复制，无损且快）=====
 let mergeTasks = []; // { id, seriesId, seriesTitle, status, progress, output, total, done, error }
 
-function resolveFfmpeg(name) {
+function resolveFfmpeg(name, { bundledOnly = false } = {}) {
   const executable = process.platform === 'win32' ? `${name}.exe` : name;
   const candidates = [
     // 可执行资源必须位于 asar 外；Finder 启动不依赖终端的 PATH。
     process.resourcesPath ? path.join(process.resourcesPath, 'bin', executable) : null,
     path.join(__dirname, 'build', 'ffmpeg', `${process.platform}-${process.arch}`, executable),
     path.join(__dirname, 'build', 'ffmpeg', executable),
-    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(dir => path.join(dir, executable)),
+    ...(bundledOnly ? [] : (process.env.PATH || '').split(path.delimiter).filter(Boolean).map(dir => path.join(dir, executable))),
   ];
   for (const c of candidates) {
     if (!c) continue;
@@ -1378,7 +1396,7 @@ function resolveFfmpeg(name) {
     } catch (_) {}
   }
   // 兜底：扫 winget 安装目录
-  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return null;
+  if (bundledOnly || process.platform !== 'win32' || !process.env.LOCALAPPDATA) return null;
   try {
     const base = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Packages');
     if (base && fs.existsSync(base)) {
@@ -1431,7 +1449,7 @@ function probeVideoInfo(ffprobePath, file, task) {
   return new Promise((resolve) => {
     const { execFile } = require('child_process');
     const child = execFile(ffprobePath, ['-v', 'error', '-show_data_hash', 'sha256',
-      '-show_entries', 'stream=codec_type,codec_name,codec_tag_string,profile,level,width,height,pix_fmt,sample_aspect_ratio,r_frame_rate,time_base,extradata_hash,sample_rate,channels,channel_layout,bit_rate,color_range,color_space,color_transfer,color_primaries,field_order:format=duration,bit_rate,size', '-of', 'json', file],
+      '-show_entries', 'stream=codec_type,codec_name,codec_tag_string,profile,level,width,height,pix_fmt,sample_aspect_ratio,r_frame_rate,time_base,duration,extradata_hash,sample_rate,channels,channel_layout,bit_rate,color_range,color_space,color_transfer,color_primaries,field_order:format=duration,bit_rate,size', '-of', 'json', file],
       { timeout: 30000 }, (err, stdout) => {
         if (task?.child === child) delete task.child;
         if (err) return resolve(null);
@@ -1944,7 +1962,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       if (!info?.url) {
         lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code, sources: info?.sources });
         // 主备均空已由取源流程处理完毕；收到该结果立即结束本轮，避免马上重走三次模型请求。
-        if (!recoverable(lastError) || info?.locked || info?.sources?.some(item => item?.exhausted)) throw lastError;
+        if (!recoverable(lastError) || info?.locked || info?.sources?.some(item => item?.exhausted)
+          || (info?.sources?.length === 1 && info.sources[0]?.code === 'UNSUPPORTED_CODEC')) throw lastError;
         continue;
       }
       const seen = new Set();
@@ -2203,6 +2222,73 @@ async function decryptContentKeyFile(input, output, contentKey, { signal, cancel
   }
 }
 
+// ===== ByteVC2：用随包 Librempeg 组件转换为原尺寸 H.264 =====
+// 核显尝试默认关闭：达到设计文档第 4 节的门槛后才会默认启用；CPU 路径始终可用。
+const bytevc2VaapiEnabled = () => process.env.HONGGUO_BYTEVC2_VAAPI === '1';
+
+// The helper only decodes AAC; fail explicitly instead of shipping broken audio.
+async function probeBytevc2Audio(input, task) {
+  const ffprobe = resolveFfmpeg('ffprobe');
+  const info = ffprobe ? await probeVideoInfo(ffprobe, input, task) : null;
+  if (!info) throw Object.assign(new Error('无法读取本集 ByteVC2 媒体信息'), { code: 'BYTEVC2_INPUT_INVALID' });
+  if (info.audio && info.audioStream?.codec_name !== 'aac') {
+    throw Object.assign(new Error('本集音轨无法原样保留，暂不能转换为 H.264'), { code: 'BYTEVC2_AUDIO_UNSUPPORTED' });
+  }
+  return info.audio;
+}
+
+// FFprobe validation of a finished conversion: H.264 track, original size,
+// quality floor, full duration (1s container tolerance) and AAC audio.
+async function verifyBytevc2Output(output, playInfo, quality, hasAudio, task) {
+  const ffprobe = resolveFfmpeg('ffprobe');
+  const info = ffprobe ? await probeVideoInfo(ffprobe, output, task) : null;
+  const invalid = message => Object.assign(new Error(message), { code: 'BYTEVC2_OUTPUT_INVALID' });
+  if (!info || info.codec !== 'h264' || ![info.w, info.h, info.duration].every(n => Number.isFinite(n) && n > 0)) {
+    throw invalid('ByteVC2 转码输出缺少有效的 H.264 视频轨');
+  }
+  if (Number(playInfo.width) > 0 && Number(playInfo.height) > 0
+    && (info.w !== Number(playInfo.width) || info.h !== Number(playInfo.height))) {
+    throw invalid('ByteVC2 转码输出分辨率与原片不一致');
+  }
+  if (!meetsDownloadQuality({ width: info.w, height: info.h }, quality)) {
+    throw invalid('ByteVC2 转码输出未达到所选清晰度，未自动降级');
+  }
+  const expected = Number(playInfo.duration);
+  const videoDuration = Number(info.video?.duration) || info.duration;
+  if (Number.isFinite(expected) && expected > 0 && Math.abs(videoDuration - expected) > 1) {
+    throw invalid('ByteVC2 转码输出时长不完整');
+  }
+  if (info.audio !== hasAudio || !isDirectH264(info)) throw invalid('ByteVC2 转码输出未保留兼容画面或原音轨');
+  return { codec: info.codec, width: info.w, height: info.h, actualQuality: Math.min(info.w, info.h) + 'p', directH264: true };
+}
+
+/** Shared conversion for playback, prefetch and downloads: audio pre-check, one optional VAAPI attempt, verified output. */
+async function convertBytevc2ToH264(input, output, playInfo, { signal, cancelToken, getPriority, onProgress, onPhase, task, quality = 'auto', maxBytes } = {}) {
+  const duration = Number(playInfo?.duration);
+  if (!Number.isFinite(duration) || duration <= 0) throw Object.assign(new Error('本集 ByteVC2 完整时长无法确认，已停止转换'), { code: 'BYTEVC2_INVALID_PARAMS' });
+  const executable = resolveFfmpeg('librempeg', { bundledOnly: true });
+  if (!executable) throw Object.assign(new Error('未找到内置 ByteVC2 解码组件，请重新下载完整版本后重试'), { code: 'BYTEVC2_HELPER_MISSING' });
+  const hasAudio = await probeBytevc2Audio(input, task);
+  let device = null, accelExecutable = null;
+  if (bytevc2VaapiEnabled() && (accelExecutable = resolveFfmpeg('librempeg-vaapi', { bundledOnly: true }))) {
+    const probeController = new AbortController();
+    const abortProbe = () => probeController.abort();
+    signal?.addEventListener('abort', abortProbe, { once: true });
+    cancelToken?.subscribe(abortProbe);
+    try { device = await pickPlaybackVaapi(accelExecutable, { controller: probeController }); }
+    catch (_) { device = null; }
+    finally { signal?.removeEventListener('abort', abortProbe); cancelToken?.unsubscribe(abortProbe); }
+  }
+  return convertBytevc2({
+    executable, input, output,
+    contentKey: playInfo.contentKey || null, duration,
+    signal, cancelToken, getPriority, maxBytes,
+    onProgress: seconds => onProgress?.(seconds, duration), onPhase,
+    device, accelExecutable: device ? accelExecutable : null,
+    verifyOutput: file => verifyBytevc2Output(file, playInfo, quality, hasAudio, task),
+  });
+}
+
 /** Encrypted sources and compatibility transcoding still require the complete MP4. */
 async function fetchDecryptedEpisode(vid, onProgress, seriesId, playInfo, signal, maxBytes = Infinity, force = false) {
   return withMediaRecovery(vid, seriesId, { playInfo, signal, force }, candidate =>
@@ -2391,7 +2477,7 @@ function isDirectH264(info) {
   return info.codec === 'h264' && info.video?.pix_fmt === 'yuv420p'
     && ['avc1', 'avc3'].includes(info.video.codec_tag_string) && (!info.audio || info.audioStream?.codec_name === 'aac');
 }
-async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onProgress) {
+async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onProgress, options = {}) {
   const directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(vid, quality)));
   const entry = { vid: String(vid), seriesId: String(seriesId), quality, filePath: path.join(directory, 'video.mp4'),
     disk: { directory, readers: 0, managed: true }, source: /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo', mediaSource: playInfo.source, codec: playInfo.codec || '' };
@@ -2411,7 +2497,18 @@ async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onPr
       try { await pipeline(response.data, fs.createWriteStream(input, { mode: 0o600 }), { signal }); }
       finally { response.data.destroy(); }
       if (!received || (total && total !== received)) throw mediaTransferError('视频下载不完整，请重试');
-      if (playInfo.contentKey) {
+      if (playInfo.codec === 'bytevc2') {
+        // ByteVC2 keeps the encrypted/plain input and converts it in one helper
+        // process; CENC is decrypted with the verified key during decoding.
+        const converted = await convertBytevc2ToH264(input, entry.filePath + '.convert', playInfo, {
+          signal, cancelToken: options.cancelToken, getPriority: options.getPriority, task: options.task, quality,
+          maxBytes: playbackCache.MAX_EPISODE_BYTES,
+          onProgress: (seconds, duration) => onProgress?.(Math.min(seconds, duration * 0.99), duration, 'transcoding'),
+          onPhase: phase => onProgress?.(0, 0, phase),
+        });
+        await fsp.rename(entry.filePath + '.convert', entry.filePath);
+        Object.assign(entry, converted.verified, { originalCodec: 'bytevc2', conversion: `${converted.encoder}-v1` });
+      } else if (playInfo.contentKey) {
         onProgress?.(received, received, 'decrypting');
         await decryptContentKeyFile(input, entry.filePath, playInfo.contentKey, { signal });
       } else if (playInfo.spadeA) {
@@ -2495,6 +2592,10 @@ async function prepareManagedPlayback(payload) {
         const controller = new AbortController();
         job = { ...descriptor, controller, disk: true, force, progress: null };
         const sourceRole = playbackSourceRole({ vid, seriesId, vidIndex, prefetch: payload.prefetch });
+        // ByteVC2 conversions from this job keep a dynamic queue priority: a
+        // foreground attach promotes the episode without restarting work.
+        job.sourceRole = sourceRole;
+        job.priorityBoost = !payload.prefetch;
         const publish = (received, total, phase) => {
           job.progress = { vid, seriesId, vidIndex, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase };
           for (const active of onlineSessions.values()) if (active.job === job) {
@@ -2507,7 +2608,9 @@ async function prepareManagedPlayback(payload) {
           if (!prepared) prepared = await withMediaRecovery(String(vid), seriesId,
             { playInfo: checked, force, quality, preferQuality: true, signal: controller.signal, sourceRole, onStage },
             candidate => prepareDiskEpisode(vid, seriesId, quality, candidate, controller.signal,
-              (received, total, phase) => publish(received, total, phase || 'downloading')));
+              (received, total, phase) => publish(received, total, phase || 'downloading'),
+              { getPriority: () => job.priorityBoost ? CONVERSION_PRIORITIES.playback
+                : job.sourceRole === 'next' ? CONVERSION_PRIORITIES.next : CONVERSION_PRIORITIES.background, task: job }));
           Object.assign(prepared, { vidIndex, manualInput: prepared.manualInput ?? manualInput });
           if (controller.signal.aborted || !withinPlaybackWindow(prepared)) { disposeOnlineDisk(prepared); throw new Error('已取消播放'); }
           for (const active of onlineSessions.values()) if (active.job === job) active.entry = { ...prepared };
@@ -2520,6 +2623,8 @@ async function prepareManagedPlayback(payload) {
         onlinePreparing.set(key, job);
       }
       session.job = job;
+      // 前台接管在途准备任务：转换队列优先级随之提升，进度保持回放。
+      if (!payload.prefetch) job.priorityBoost = true;
       if (job.progress) sendToRenderer('online-play-progress', { ...job.progress, requestId });
       entry = await job.promise;
     }
@@ -2553,7 +2658,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       let job = onlinePreparing.get(key);
       if (!job || (force && !job.force)) {
         const controller = new AbortController();
-        job = { controller, force, stageListeners: [] };
+        job = { controller, force, stageListeners: [], priorityBoost: !prefetch };
         const sourceRole = playbackSourceRole({ vid: key, seriesId, vidIndex, prefetch });
         // 前台等待（含预取提升为前台）时回报取源恢复阶段；预取本身保持后台静默。
         const onStage = stage => { for (const listener of job.stageListeners) { try { listener(stage); } catch (_) {} } };
@@ -2569,6 +2674,13 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
               // 让渲染器提前知道编码：本机解不了 HEVC 时可直接转兼容格式，不再先播一段黑屏。
               codec:String(playInfo.codec || '')};
             if (playInfo.format === 'hls') await prepareHlsEntry(playInfo,entry,controller.signal,received => progress(received,0));
+            else if (playInfo.codec === 'bytevc2') {
+              // ByteVC2 先生成受管 H.264 文件，再走在线媒体协议提供分段读取。
+              const converted = await prepareDiskEpisode(key, seriesId, 'auto', playInfo, controller.signal, progress,
+                { getPriority: () => job.priorityBoost ? CONVERSION_PRIORITIES.playback
+                  : sourceRole === 'next' ? CONVERSION_PRIORITIES.next : CONVERSION_PRIORITIES.background, task: job });
+              return { ...entry, ...converted, complete: true };
+            }
             else if (!prefetch && !playInfo.spadeA && !playInfo.contentKey) return {...entry,playInfo};
             else {
               entry.buffer = await fetchDecryptedEpisodeOnce(key,progress,seriesId,playInfo,controller.signal,prefetch?ONLINE_MAX_BYTES:Infinity);
@@ -2587,6 +2699,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
         onlinePreparing.set(key, job);
       }
       session.job = job;
+      if (!prefetch) job.priorityBoost = true;
       if (!prefetch && Array.isArray(job.stageListeners)) job.stageListeners.push(stage => {
         for (const active of onlineSessions.values()) if (active.vid === key) {
           sendToRenderer('online-play-progress',{vid:key,seriesId,vidIndex,requestId:active.requestId,

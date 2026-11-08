@@ -149,6 +149,51 @@ async function main() {
     verifyBinary(binary);
     console.log(name + ': SHA256、ELF x86-64 与系统库依赖校验通过');
   }
+
+  // ByteVC2 helper: required for the distributable package, built from pinned
+  // source by scripts/build-librempeg-source.sh (never downloaded prebuilt).
+  const helper = path.join(dest, 'librempeg');
+  const accel = path.join(dest, 'librempeg-vaapi');
+  if (!fs.existsSync(helper)) {
+    if (process.env.HONGGUO_SKIP_LIBREMPEG === '1') {
+      console.log('librempeg: 缺失（HONGGUO_SKIP_LIBREMPEG=1，跳过；ByteVC2 剧集将不可播放）');
+      return;
+    }
+    throw new Error('缺少 ByteVC2 辅助组件 build/ffmpeg/linux-x64/librempeg；'
+      + '先运行 scripts/build-librempeg-source.sh <目录> linux-x64 构建，'
+      + '或设置 HONGGUO_SKIP_LIBREMPEG=1 跳过（仅限本地调试）');
+  }
+  fs.chmodSync(helper, 0o755);
+  verifyBinary(helper);
+  const capabilities = (name, args) => execFileSync(path.join(dest, name), ['-hide_banner', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const hasCodec = (name, listFlag, codec) => capabilities(name, [listFlag])
+    .split('\n').some(line => line.trim().split(/\s+/)[1] === codec);
+  assert.ok(hasCodec('librempeg', '-decoders', 'bvc2'), 'librempeg 缺少 bvc2 解码器');
+  if (!verifyBinaryLogsNoPattern(helper, /libva|libdrm/)) {
+    throw new Error('librempeg 不得依赖 libva/libdrm（核显加速请使用独立的 librempeg-vaapi）');
+  }
+  console.log('librempeg: ELF x86-64、系统库依赖（无 libva）与 bvc2 解码能力校验通过');
+  if (fs.existsSync(accel)) {
+    fs.chmodSync(accel, 0o755);
+    verifyBinary(accel);
+    assert.ok(hasCodec('librempeg-vaapi', '-encoders', 'h264_vaapi'), 'librempeg-vaapi 缺少 h264_vaapi 编码器');
+    assert.ok(hasCodec('librempeg-vaapi', '-decoders', 'bvc2'), 'librempeg-vaapi 缺少 bvc2 解码器');
+    console.log('librempeg-vaapi: ELF x86-64、系统库依赖与 bvc2/h264_vaapi 能力校验通过（可选加速组件）');
+  } else {
+    console.log('librempeg-vaapi: 缺失（可选加速组件，跳过）');
+  }
+}
+
+// True when `ldd` output does NOT mention the pattern (used to keep the CPU
+// helper free of graphics-stack dependencies).
+function verifyBinaryLogsNoPattern(file, pattern) {
+  let listing;
+  try {
+    listing = execFileSync('/usr/bin/ldd', [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    listing = String(error.stdout || '') + '\n' + String(error.stderr || '');
+  }
+  return !pattern.test(listing);
 }
 
 main().catch((error) => {

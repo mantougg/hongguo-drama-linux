@@ -475,7 +475,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     return window.electronAPI.onOnlinePlayProgress((d) => {
       const request = onlineRequestRef.current;
       const phase = taskPhaseFromProgressStage(d.phase);
-      patchTask(d.vidIndex, d.requestId, { phase, progress: d, percent: phase === 'buffering' && d.total > 0 ? d.percent : null });
+      // 缓冲与转码都有可计算的百分比；等待转码只显示阶段。
+      patchTask(d.vidIndex, d.requestId, { phase, progress: d, percent: (phase === 'buffering' || phase === 'transcoding') && d.total > 0 ? d.percent : null });
       if (!request || request.prepared || d.requestId !== request.requestId) return;
       setOnlineProgress({
         vid: d.vid,
@@ -574,7 +575,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   // 信息抽屉：当前等待阶段与实际使用的媒体信息；尚未得到的显示「待确认」。
   const stageWaitingText = playbackError ? playbackError
     : compatProgress ? `正在转码 ${compatProgress.percent || 0}%`
-    : onlineProgress ? ({ preparing: '正在取源', reconnecting: '正在重连', decrypting: '正在准备播放', downloading: '正在缓冲' }[onlineProgress.phase] || '正在缓冲') + (onlineProgress.phase === 'downloading' && Number.isFinite(onlineProgress.percent) ? ` ${onlineProgress.percent || 0}%` : '')
+    : onlineProgress ? ({ preparing: '正在取源', reconnecting: '正在重连', decrypting: '正在准备播放', downloading: '正在缓冲', queued: '等待转码', transcoding: '正在转码' }[onlineProgress.phase] || '正在缓冲') + ((onlineProgress.phase === 'downloading' || onlineProgress.phase === 'transcoding') && Number.isFinite(onlineProgress.percent) ? ` ${onlineProgress.percent || 0}%` : '')
     : waitingFor != null ? `第 ${waitingFor} 集正在下载` : mediaBuffering ? '正在缓冲'
     : loading || qualityLoading ? '正在读取剧集' : '';
   const mediaInfoRows = useMemo(() => {
@@ -1989,15 +1990,16 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>
                 <RefreshCw size={30} className="spin" />
-                <p>{onlineProgress.phase === 'preparing' ? '正在连接片源…' : onlineProgress.phase === 'reconnecting' ? '正在重连片源…'
-                  : onlineProgress.phase === 'decrypting' ? '正在准备播放…' : '正在缓冲在线播放…'}</p>
-                {onlineProgress.phase !== 'preparing' && onlineProgress.phase !== 'reconnecting' && <div className="player-wait-bar">
+                <p>{({ preparing: '正在连接片源…', reconnecting: '正在重连片源…', decrypting: '正在准备播放…',
+                  queued: '等待转码…', transcoding: '正在转码…' })[onlineProgress.phase] || '正在缓冲在线播放…'}</p>
+                {onlineProgress.total > 0 && <div className="player-wait-bar">
                   <div className="player-wait-fill" style={{ width: `${onlineProgress.percent || 0}%` }} />
                 </div>}
                 <span className="player-placeholder-sub">
                   {onlineProgress.phase === 'preparing' ? '获取可播放地址' : onlineProgress.phase === 'reconnecting' ? '正在尝试备用入口或更新会话'
-                    : `${onlineProgress.percent || 0}%`}
-                  {onlineProgress.total ? ` · ${(onlineProgress.received / 1048576).toFixed(1)} / ${(onlineProgress.total / 1048576).toFixed(1)} MB` : ''}
+                    : onlineProgress.phase === 'queued' ? '片源已下载' : `${onlineProgress.percent || 0}%`}
+                  {onlineProgress.phase === 'downloading' && onlineProgress.total > 0
+                    ? ` · ${(onlineProgress.received / 1048576).toFixed(1)} / ${(onlineProgress.total / 1048576).toFixed(1)} MB` : ''}
                   {' · 不写入下载目录'}
                 </span>
                 <button className="btn btn-outline" onClick={() => stopPlayback()}>取消播放</button>

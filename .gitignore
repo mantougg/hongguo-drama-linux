@@ -11,6 +11,9 @@ build/ffmpeg/*
 !build/ffmpeg/*.txt
 !build/ffmpeg/COPYING.*
 !build/ffmpeg/LICENSE.md
+!build/ffmpeg/LIBREMPEG-COPYING.GPLv3
+!build/ffmpeg/LIBREMPEG-COPYING.AGPLv3
+!build/ffmpeg/LIBREMPEG-LICENSE.md
 
 # 构建与打包输出
 release/

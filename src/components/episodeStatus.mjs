@@ -20,11 +20,13 @@ export const TASK_PHASE_LABELS = Object.freeze({
   sourcing: '正在取源',
   reconnecting: '正在重连',
   buffering: '正在缓冲',
+  waitingConvert: '等待转码',
   transcoding: '正在转码',
   failed: '准备失败',
 });
 
-const PHASE_FROM_STAGE = Object.freeze({ preparing: 'sourcing', reconnecting: 'reconnecting', decrypting: 'buffering', downloading: 'buffering' });
+const PHASE_FROM_STAGE = Object.freeze({ preparing: 'sourcing', reconnecting: 'reconnecting', decrypting: 'buffering', downloading: 'buffering',
+  queued: 'waitingConvert', transcoding: 'transcoding' });
 
 // 主进程 online-play-progress 的阶段映射为选集任务阶段。
 export function taskPhaseFromProgressStage(stage) {

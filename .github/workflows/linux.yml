@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['package.json', '.github/workflows/linux.yml', 'scripts/setup-ffmpeg-linux.js', 'scripts/restore-linux-media.py']
+    paths: ['package.json', '.github/workflows/linux.yml', 'scripts/setup-ffmpeg-linux.js', 'scripts/build-librempeg-source.sh', 'src/native/bytevc2.js', 'scripts/restore-linux-media.py']
 permissions:
   contents: write
 env:
@@ -14,7 +14,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,6 +41,15 @@ jobs:
           npm ci --no-audit --no-fund
           node node_modules/electron/install.js
           TMPDIR="$RUNNER_TEMP" python3 scripts/restore-linux-media.py --repository "$GITHUB_REPOSITORY"
+      - name: Build pinned ByteVC2 helpers from source
+        if: steps.version.outputs.published != 'true'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq nasm libva-dev libdrm-dev
+          for target in linux-x64 linux-x64-vaapi; do
+            scripts/build-librempeg-source.sh "$RUNNER_TEMP/librempeg-build" "$target" "$(nproc)"
+          done
+          install -m 755 "$RUNNER_TEMP/librempeg-build/artifacts/bin/librempeg" build/ffmpeg/linux-x64/librempeg
+          install -m 755 "$RUNNER_TEMP/librempeg-build/artifacts/bin/librempeg-vaapi" build/ffmpeg/linux-x64/librempeg-vaapi
           node scripts/setup-ffmpeg-linux.js
       - name: Test and package
         if: steps.version.outputs.published != 'true'
@@ -62,8 +71,9 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           git archive --format=zip --output="dist/hongguo-drama-${RELEASE_VERSION}-linux-source.zip" HEAD
+          cp "$RUNNER_TEMP"/librempeg-build/artifacts/librempeg-*-corresponding-source.tar.gz dist/
           cd dist
-          sha256sum "hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "hongguo-drama-${RELEASE_VERSION}-linux-source.zip" > SHA256SUMS.txt
+          sha256sum "hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "hongguo-drama-${RELEASE_VERSION}-linux-source.zip" librempeg-*-corresponding-source.tar.gz > SHA256SUMS.txt
       - name: Publish after all checks pass
         if: steps.version.outputs.published != 'true'
         env:
@@ -74,5 +84,5 @@ jobs:
           notes="docs/release-${RELEASE_VERSION}-linux.md"
           test -f "$notes"
           gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" --title "Linux v${RELEASE_VERSION}" --notes-file "$notes"
-          gh release upload "$RELEASE_TAG" "dist/hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "dist/hongguo-drama-${RELEASE_VERSION}-linux-source.zip" dist/SHA256SUMS.txt --clobber
+          gh release upload "$RELEASE_TAG" "dist/hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "dist/hongguo-drama-${RELEASE_VERSION}-linux-source.zip" dist/librempeg-*-corresponding-source.tar.gz dist/SHA256SUMS.txt --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest

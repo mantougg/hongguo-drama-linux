@@ -38,7 +38,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
     context.registerLocalProtocol(); context.registerStreamProtocol();
     for (const [index, selected] of cases.entries()) {
       const quality = selected.quality || 'auto', requestId = `live-${index}`;
-      const source = await req('./src/native/hongguo').fetchPlayUrlSingle(selected.vid, selected.seriesId, { quality, force: true });
+      const source = await req('./src/native/hongguo').fetchPlayUrlSingle(selected.vid, selected.seriesId, { quality, force: true, role: 'foreground' });
       console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
         source: source.source || 'app', width: source.width, height: source.height, codec: source.codec,
         failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
@@ -53,8 +53,15 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       await decode(entry.filePath);
       const range = await protocols[new URL(result.url).protocol.slice(0, -1)](new Request(result.url, { headers: { Range: 'bytes=0-1023' } }));
       assert.equal(range.status, 206); assert.equal((await range.arrayBuffer()).byteLength, 1024);
+      // ByteVC2 片源必须以转换后的 H.264 发布，并保留诊断字段。
+      if (source.codec === 'bytevc2') {
+        assert.equal(entry.codec, 'h264', 'ByteVC2 分集必须转换为 H.264');
+        assert.equal(entry.originalCodec, 'bytevc2');
+        assert.match(entry.conversion || '', /^libx264-v1$|^h264_vaapi-v1$/, '转换方式字段缺失');
+      }
       console.log(JSON.stringify({ passed: true, stage: 'prepared-media', source: entry.mediaSource,
-        width: entry.width, height: entry.height, codec: entry.codec, bytes: entry.size, range: 206, decodedSeconds: 3 }));
+        width: entry.width, height: entry.height, codec: entry.codec, bytes: entry.size, range: 206, decodedSeconds: 3,
+        ...(source.codec === 'bytevc2' ? { originalCodec: entry.originalCodec, conversion: entry.conversion } : {}) }));
       if (compat) {
         const converted = await handlers['transcode-for-playback']({}, { ...selected, quality,
           filePath: entry.filePath, requestId: `live-compat-${index}` });
@@ -77,6 +84,11 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       await context.executeHongguoDownload(context.liveTask);
       assert.equal(context.liveTask.status, 'completed', context.liveTask.error);
       await decode(output);
+      if (source.codec === 'bytevc2') {
+        const probe = JSON.parse((await exec(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries',
+          'stream=codec_name,width,height', '-of', 'json', output], { timeout: 10000 })).stdout).streams[0];
+        assert.equal(probe.codec_name, 'h264', 'ByteVC2 手动下载必须发布 H.264 文件');
+      }
       console.log(JSON.stringify({ passed: true, stage: 'manual-download', source: entry.mediaSource, bytes: fs.statSync(output).size }));
       await handlers['release-online-play']({}, { streamId: result.streamId });
     }
