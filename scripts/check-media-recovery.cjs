@@ -89,6 +89,38 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     assert.match(p.error,/空响应/);
     assert.equal(lookups,1,'外围重试收到主备均空后立即结束这一轮');
   });
+  await check('supplement exhaustion stops playback, prefetch and download until a manual retry', async () => {
+    const failure = { url: null, code: 'SOURCE_UNAVAILABLE', error: '补充播放信息失败（请求超时）',
+      sources: [{ source: 'app', code: 'TIMEOUT', stage: 'supplement', exhausted: true }] };
+    for (const playback of [{}, { disk: true, prefetch: true }]) {
+      let lookups = 0;
+      const h = harness(async () => ++lookups === 1 ? failure : info('/ok'));
+      const payload = { vid: '11', seriesId: '1', vidIndex: 1, ...playback };
+      const result = await h.handlers['prepare-online-play']({}, payload);
+      assert.equal(result.success, false);
+      assert.equal(result.exhausted, true);
+      assert.match(result.error, /补充播放信息失败/);
+      assert.equal(lookups, 1);
+      const retry = await h.handlers['prepare-online-play']({}, { ...payload, force: true, prefetch: false });
+      assert.equal(retry.success, true, retry.error);
+      assert.equal(lookups, 2);
+    }
+
+    let lookups = 0;
+    const h = harness(async () => ++lookups === 1 ? failure : info('/ok'));
+    const t = task('supplement-retry');
+    h.context.testTask = t;
+    h.run('downloadTasks = [testTask]');
+    await h.context.executeHongguoDownload(t);
+    assert.equal(t.status, 'failed');
+    assert.match(t.error, /补充播放信息失败/);
+    assert.equal(t.retryAt, undefined, 'a supplement timeout must not schedule a delayed retry');
+    assert.equal(lookups, 1);
+    assert.equal((await h.handlers['retry-task']({}, t.id)).success, true);
+    for (let wait = 0; wait < 100 && t.status !== 'completed'; wait++) await sleep(10);
+    assert.equal(t.status, 'completed', t.error);
+    assert.equal(lookups, 2);
+  });
   await check('source roles follow the playback window',async()=>{
     const roles=[]; const h=harness(async(_v,_s,o)=>{ roles.push(o.role); return info('/ok'); });
     const w=await h.handlers['set-playback-window']({}, {seriesId:'1',vidIndex:1,quality:'auto',

@@ -94,8 +94,35 @@ const checks = [
       const result = await f.fetchPlayUrlSingle('11', '1');
       assert.equal(result.sources[0].code, 'EMPTY_RESPONSE');
       assert.match(result.error, pattern);
-      assert.equal(result.sources[0].exhausted, exhausted, '主备均空才标记终态');
+      assert.equal(result.sources[0].exhausted, exhausted);
       assert.doesNotMatch(JSON.stringify(result), /PRIVATE_RESPONSE_SENTINEL/);
+    }
+  }],
+  ['inline encryption and supplemental failures are distinct, safe and retryable by the user', async () => {
+    for (const [code, pattern, exhausted, mappedCode = code] of [
+      ['INLINE_ENCRYPTION_MISSING', /缺少加密状态和密钥/, undefined],
+      ['EMPTY_RESPONSE', /补充播放信息返回空响应/, true],
+      ['SUPPLEMENT_MISMATCH', /补充片源的媒体编号或完整时长与原片不符/, true],
+      ['SUPPLEMENT_QUALITY', /补充片源的实际尺寸未达到原档位/, true],
+      ['INVALID_RESPONSE', /补充播放信息失败/, true],
+      ['ETIMEDOUT', /补充播放信息失败.*超时/, true, 'TIMEOUT'],
+      ['BUSINESS_REJECTED', /补充播放信息失败.*拒绝/, true],
+      ['SECURITY_BLOCKED', /补充播放信息失败.*安全校验/, true],
+    ]) {
+      let calls = 0;
+      const f = load('hongguo.js', { './app-source': { fetchAppPlayUrl: async () => {
+        if (++calls > 1) return { url: media('retry'), source: 'app' };
+        throw Object.assign(new Error('PRIVATE_RESPONSE_SENTINEL'), { code, exhausted,
+          ...(exhausted ? { recovery: { stage: 'supplement' } } : {}) });
+      } } });
+      const result = await f.fetchPlayUrlSingle('11', '1');
+      assert.equal(result.sources[0].code, mappedCode);
+      assert.equal(result.sources[0].exhausted, exhausted);
+      assert.equal(result.sources[0].stage, exhausted ? 'supplement' : undefined);
+      assert.match(result.error, pattern);
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_RESPONSE_SENTINEL/);
+      assert.equal((await f.fetchPlayUrlSingle('11', '1', { force: true })).url, media('retry'));
+      assert.equal(calls, 2);
     }
   }],
   ['App distinguishes HTTP, business refusal, absent model, parsing and unsafe media', async () => {

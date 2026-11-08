@@ -25,7 +25,8 @@ function encodedKey() {
   raw[0] = 48 ^ raw[1] ^ raw[2];
   return raw.toString('base64');
 }
-function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', media = 'https://v3-reading.qznovelvod.com/video.mp4', redirect = '', malformedKey = false, videoList = null, encrypted = true, model = null, platform = 'linux' } = {}) {
+function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', media = 'https://v3-reading.qznovelvod.com/video.mp4',
+  redirect = '', malformedKey = false, videoList = null, encrypted = true, model = null, inlineModel = null, platform = 'linux' } = {}) {
   const calls = [];
   const seed = Buffer.alloc(16, 7);
   const constants = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
@@ -54,13 +55,13 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       for (const name of ['x-medusa', 'x-helios', 'x-ladon', 'x-argus']) assert.ok(Buffer.from(config.headers[name], 'base64').length > 0);
       assert.equal(config.headers.Cookie, undefined);
       assert.equal(config.headers.Authorization, undefined);
-      const model = { video_model: JSON.stringify({ fallback_api: fallback }) };
-      return { status: 200, headers: {}, data: JSON.stringify({ code: 0, data: { '999': model, ...(wrongVid ? {} : { '11': model }) } }) };
+      const entry = { video_model: JSON.stringify({ fallback_api: fallback, ...inlineModel }) };
+      return { status: 200, headers: {}, data: JSON.stringify({ code: 0, data: { '999': entry, ...(wrongVid ? {} : { '11': entry }) } }) };
     }
     if (redirect) return { status: 302, headers: { location: redirect }, data: '' };
     return { status: 200, headers: {}, data: JSON.stringify({ video_info: { data: { ...(model || {}), key_seed: encrypted ? seed.toString('base64') : null, video_list: videoList || {
       bad: { main_url: media, codec_type: 'bytevc2', quality_desc: '2160P', spade_a: encodedKey() },
-      good: { main_url: encryptedUrl, codec_type: 'h264', quality_desc: '720P', spade_a: malformedKey ? 'bad' : encodedKey() },
+      good: { main_url: encryptedUrl, codec_type: 'h264', quality_desc: '720P', width: 1280, height: 720, spade_a: malformedKey ? 'bad' : encodedKey() },
     } } } }) };
   };
   const context = { Buffer, URL, URLSearchParams, AbortSignal, module: { exports: {} },
@@ -101,6 +102,13 @@ const appModel = (videoList, fetchOptions = {}, fixtureOptions = {}) =>
   fixture({ videoList, encrypted: false, model: convertibleModel, ...fixtureOptions }).fetch('11', fetchOptions);
 const bytevc2Row = (name, { width = 1080, height = 1920, key = true } = {}) => ({
   main_url: mediaUrl(name), codec_type: 'bytevc2', quality_desc: `${width}P`, width, height, ...(key ? { spade_a: encodedKey() } : {}),
+});
+const mediaIdentity = { video_id: 'media-180', video_duration: 45.21 };
+const hevcRow = (width, height, name = `hevc-${height}`) => ({
+  main_url: mediaUrl(name), codec_type: 'bytevc1', quality_desc: `${height}p`, width, height,
+});
+const inlineFixture = (inlineRows, videoList, options = {}) => fixture({
+  inlineModel: { ...mediaIdentity, video_list: inlineRows }, videoList, model: mediaIdentity, encrypted: false, ...options,
 });
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
@@ -193,6 +201,103 @@ const checks = [
     assert.equal(result.url, mediaUrl('working'));
     assert.equal(result.contentKey, keyHex);
     await assert.rejects(appRows({ one: { main_url: 'https://127.0.0.1/private', backup_url: 'file:///private', codec_type: 'h264' } }));
+  }],
+  ['missing inline encryption metadata recovers episode 180 at the selected dimensions', async () => {
+    const rows = [[640, 360], [854, 480], [960, 540], [1280, 720], [1920, 1080]].map(size => hevcRow(...size));
+    const supplement = rows.map(row => ({ ...row, main_url: mediaUrl(`supplement-${row.height}`), encrypt: false, spade_a: '' }));
+    for (const videoList of [rows, Object.fromEntries(rows.map(row => [row.quality_desc, row]))]) {
+      for (const [quality, width, height] of [['auto', 1920, 1080], ['1080p', 1920, 1080], ['720p', 1280, 720]]) {
+        const f = inlineFixture(videoList, supplement);
+        const result = await f.fetch('11', { quality });
+        assert.equal(f.calls.length, 2, 'one main request and one supplement');
+        assert.equal(f.calls[0].signal, f.calls[1].signal);
+        assert.equal(result.url, mediaUrl(`supplement-${height}`));
+        assert.equal(result.source, 'app');
+        assert.equal(result.codec, 'hevc');
+        assert.equal(result.contentKey, null);
+        assert.equal(result.width, width);
+        assert.equal(result.height, height);
+        assert.ok(result.variants.every(variant => variant.height >= height));
+      }
+    }
+  }],
+  ['supplement reuses URL decryption, key derivation and validated backup ordering', async () => {
+    const f = inlineFixture([hevcRow(1280, 720)], null, { encrypted: true });
+    const result = await f.fetch('11');
+    assert.equal(result.url, 'https://v3-reading.qznovelvod.com/video.mp4');
+    assert.equal(result.contentKey, keyHex);
+    assert.equal(f.calls.length, 2);
+
+    const backup = mediaUrl('supplement-backup');
+    const row = { ...hevcRow(1920, 1080), main_url: 'https://127.0.0.1/private',
+      backup_url: backup, backup_url_list: [backup, mediaUrl('supplement-next')], encrypt_info: { encrypt: 'false' } };
+    const chosen = await inlineFixture([hevcRow(1920, 1080)], [row]).fetch('11');
+    assert.deepEqual([...chosen.variants].map(item => item.url), [backup, mediaUrl('supplement-next')]);
+  }],
+  ['usable inline H.264, HEVC and ByteVC2 skip the supplement', async () => {
+    const missing = hevcRow(1920, 1080);
+    for (const [row, codec] of [
+      [{ ...missing, codec_type: 'h264', encrypt: false }, 'h264'],
+      [{ ...missing, spade_a: encodedKey() }, 'hevc'],
+      [{ ...missing, codec_type: 'bytevc2', encrypt_info: { encrypt: 0 } }, 'bytevc2'],
+    ]) {
+      const f = inlineFixture([missing, row], []);
+      const result = await f.fetch('11');
+      assert.equal(result.codec, codec);
+      assert.equal(f.calls.length, 1);
+    }
+  }],
+  ['only recover when every selected inline row lacks both fields and has a trusted URL', async () => {
+    const row = hevcRow(1920, 1080);
+    for (const [rows, code] of [
+      [[{ ...row, encrypt: true }], 'INVALID_RESPONSE'],
+      [[{ ...row, encrypt: null }], 'INVALID_RESPONSE'],
+      [[{ ...row, encrypt: 'unknown', spade_a: encodedKey() }], 'INVALID_RESPONSE'],
+      [[{ ...row, spade_a: '' }], 'INVALID_RESPONSE'],
+      [[row, { ...row, spade_a: 'bad' }], 'INVALID_RESPONSE'],
+      [[{ ...row, main_url: 'https://127.0.0.1/private' }], 'SECURITY_BLOCKED'],
+      [[hevcRow(1280, 720)], 'QUALITY_UNAVAILABLE'],
+      [[{ ...row, codec_type: 'av01' }], 'UNSUPPORTED_CODEC'],
+    ]) {
+      const f = inlineFixture(rows, []);
+      await assert.rejects(f.fetch('11', { quality: '1080p' }), error => error.code === code);
+      assert.equal(f.calls.length, 1, code);
+    }
+    for (const model of [
+      { ...mediaIdentity, video_id: '' }, { ...mediaIdentity, video_duration: 0 },
+      { ...mediaIdentity, video_duration: 'Infinity' }, { ...mediaIdentity, video_duration: true },
+      { ...mediaIdentity, video_list: [{ ...row, width: undefined }] },
+      { ...mediaIdentity, fallback_api: '' },
+    ]) {
+      const f = inlineFixture([row], [], { inlineModel: { video_list: [row], ...model } });
+      await assert.rejects(f.fetch('11'), error => error.code === 'INLINE_ENCRYPTION_MISSING');
+      assert.equal(f.calls.length, 1);
+    }
+  }],
+  ['supplement requires exact identity, full duration, real resolution and confirmed encryption', async () => {
+    const row = hevcRow(1920, 1080);
+    const clear = { ...row, encrypt: '0' };
+    for (const [candidate, model, code] of [
+      [clear, { ...mediaIdentity, video_id: 'media-180 ' }, 'SUPPLEMENT_MISMATCH'],
+      [clear, { ...mediaIdentity, video_duration: 44.7 }, 'SUPPLEMENT_MISMATCH'],
+      [clear, { ...mediaIdentity, video_duration: null }, 'SUPPLEMENT_MISMATCH'],
+      [{ ...clear, width: 1440 }, mediaIdentity, 'SUPPLEMENT_QUALITY'],
+      [{ ...clear, height: 720 }, mediaIdentity, 'SUPPLEMENT_QUALITY'],
+      [{ ...clear, height: undefined }, mediaIdentity, 'SUPPLEMENT_QUALITY'],
+      [row, mediaIdentity, 'INVALID_RESPONSE'],
+      [{ ...row, encrypt: true, spade_a: '' }, mediaIdentity, 'INVALID_RESPONSE'],
+      [{ ...row, encrypt: false, spade_a: 'bad' }, mediaIdentity, 'INVALID_RESPONSE'],
+      [{ ...clear, main_url: 'https://127.0.0.1/private' }, mediaIdentity, 'SECURITY_BLOCKED'],
+    ]) {
+      const f = inlineFixture([row], [candidate], { model });
+      await assert.rejects(f.fetch('11'), error => error.code === code && error.exhausted && error.recovery.stage === 'supplement');
+      assert.equal(f.calls.length, 2, code);
+    }
+    const f = inlineFixture([row], [{ ...clear, width: 1440 }, { ...clear, main_url: mediaUrl('matching') }], {
+      model: { ...mediaIdentity, video_duration: 45.71 },
+    });
+    const result = await f.fetch('11', { quality: '720p' });
+    assert.deepEqual([...result.variants].map(item => item.url), [mediaUrl('matching')], 'the original measured tier still applies at fixed 720p');
   }],
   ['legacy parser prefers H264 and keeps a usable backup', async () => {
     const { parseModelVideo } = nativeFixture();

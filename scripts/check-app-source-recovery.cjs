@@ -35,7 +35,7 @@ function load(axios, { realDevice = false, playbackDevice, now } = {}) {
   return module.exports;
 }
 
-function modelResponse(rows) {
+function modelResponse(model = {}) {
   return {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -45,6 +45,7 @@ function modelResponse(rows) {
         [vid]: {
           video_model: {
             fallback_api: 'https://api5-normal-sinfonlineb.fqnovel.com/fallback',
+            ...model,
           },
         },
       },
@@ -193,11 +194,14 @@ function row(definition, width, height, suffix) {
   }, { playbackDevice: {
     getPlaybackDevice: async () => identities[0],
     requestFastDeviceUpdate: async (_request, options) => new Promise((_resolve, reject) => {
-      options.signal.addEventListener('abort', () => reject(Object.assign(new Error('已取消会话更新等待'), { code: 'ERR_CANCELED' })));
+      const canceled = () => reject(Object.assign(new Error('已取消会话更新等待'), { code: 'ERR_CANCELED' }));
+      if (options.signal.aborted) canceled();
+      else options.signal.addEventListener('abort', canceled, { once: true });
     }),
     pauseFastDeviceUpdates: () => {},
   } }).fetchAppPlayUrl(vid, {
     role: 'foreground',
+    signal: cancelController.signal,
     onStage: () => cancelController.abort(),
   }).then(() => null, error => error);
   assert.equal(cancelledError.code, 'ERR_CANCELED', '取消直接结束本轮，不再伪装成空响应');
@@ -244,6 +248,76 @@ function row(definition, width, height, suffix) {
   assert.equal(supplementError.exhausted, undefined, '补充空响应不是主备均空终态');
   assert.equal(supplementCalls, 1);
 
+  const inlineMissing = { video_id: 'full-media', video_duration: 45.21, video_list: [row('1080p', 1920, 1080, 'missing')] };
+  for (const [reply, code, status] of [
+    [{ status: 200, headers: {}, data: ' ' }, 'EMPTY_RESPONSE'],
+    [{ status: 200, headers: {}, data: '{}' }, 'MISSING_MODEL'],
+    [{ status: 200, headers: {}, data: '{"video_info":{"Code":8}}' }, 'BUSINESS_REJECTED'],
+    [{ status: 403, headers: {}, data: '' }, undefined, 403],
+    [{ status: 302, headers: { location: 'https://127.0.0.1/private' }, data: '' }, 'SECURITY_BLOCKED'],
+  ]) {
+    let requests = 0;
+    const app = load(async config => {
+      requests++;
+      return config.method === 'POST' ? modelResponse(inlineMissing) : reply;
+    });
+    await assert.rejects(app.fetchAppPlayUrl(vid), error => error.code === code && error.status === status &&
+      error.exhausted === true && error.recovery.stage === 'supplement');
+    assert.equal(requests, 2, 'supplement failures do not restart playback model lookup or follow an unsafe redirect');
+  }
+
+  let badFallbackCalls = 0;
+  const badFallback = load(async () => {
+    badFallbackCalls++;
+    return modelResponse({ ...inlineMissing, fallback_api: 'http://vod.snssdk.com/info' });
+  });
+  await assert.rejects(badFallback.fetchAppPlayUrl(vid), error => error.code === 'SECURITY_BLOCKED' && error.exhausted);
+  assert.equal(badFallbackCalls, 1, 'unsafe supplement endpoints are never contacted');
+
+  clock = Date.now();
+  const timeouts = [];
+  const timed = load(async config => {
+    timeouts.push(config.timeout);
+    if (config.method === 'POST') {
+      clock += 11000;
+      return modelResponse(inlineMissing);
+    }
+    throw Object.assign(new Error('request timed out'), { code: 'ECONNABORTED' });
+  }, { now: () => clock });
+  await assert.rejects(timed.fetchAppPlayUrl(vid), error => error.code === 'ECONNABORTED' &&
+    error.exhausted && error.recovery.stage === 'supplement');
+  assert.deepEqual(timeouts, [12000, 1000], 'supplement inherits the remaining budget');
+
+  clock = Date.now();
+  const supplementDeadline = clock + 29000;
+  const bounded = load(async config => {
+    if (config.method === 'POST') {
+      assert.equal(config.timeout, 27000);
+      clock += 20000;
+      return modelResponse(inlineMissing);
+    }
+    assert.equal(config.timeout, 1100, 'leave time to report the terminal timeout to the outer waiter');
+    throw Object.assign(new Error('request timed out'), { code: 'ECONNABORTED' });
+  }, { now: () => clock, playbackDevice: { getPlaybackDevice: async () => { clock += 7900; return identities[0]; } } });
+  await assert.rejects(bounded.fetchAppPlayUrl(vid, { role: 'foreground', supplementDeadline }), error =>
+    error.code === 'ECONNABORTED' && error.exhausted && error.recovery.stage === 'supplement');
+
+  const stopSupplement = new AbortController();
+  let cancelRequests = 0, beginSupplement;
+  const inFlight = new Promise(resolve => { beginSupplement = resolve; });
+  const abortable = load(async config => {
+    cancelRequests++;
+    if (config.method === 'POST') return modelResponse(inlineMissing);
+    beginSupplement();
+    return new Promise((_resolve, reject) => config.signal.addEventListener('abort', () =>
+      reject(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' })), { once: true }));
+  });
+  const pendingSupplement = abortable.fetchAppPlayUrl(vid, { signal: stopSupplement.signal });
+  await inFlight;
+  stopSupplement.abort();
+  await assert.rejects(pendingSupplement, error => error.code === 'ERR_CANCELED' && error.exhausted && error.recovery.stage === 'supplement');
+  assert.equal(cancelRequests, 2);
+
   // 新会话重取优先最近成功过的入口，缺少记录时用主入口。
   let routedCalls = 0; const routedHosts = [];
   const preferred = load(async config => {
@@ -280,9 +354,10 @@ function row(definition, width, height, suffix) {
   const encrypted = { ...plain, encrypt_info: { encrypt: true, spade_a: raw.toString('base64') } };
   const keyed = await load(async () => inlineResponse([encrypted])).fetchAppPlayUrl(vid);
   assert.equal(keyed.contentKey, keyHex);
-  for (const info of [{ encrypt: true }, {}, { encrypt: true, spade_a: 'bad' }]) {
+  for (const [info, code] of [[{ encrypt: true }, 'INVALID_RESPONSE'], [{}, 'INLINE_ENCRYPTION_MISSING'],
+    [{ encrypt: true, spade_a: 'bad' }, 'INVALID_RESPONSE']]) {
     await assert.rejects(load(async () => inlineResponse([{ ...plain, encrypt_info: info }])).fetchAppPlayUrl(vid),
-      error => error.code === 'INVALID_RESPONSE');
+      error => error.code === code);
   }
   await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchAppPlayUrl(vid),
     error => error.code === 'MISSING_MODEL');

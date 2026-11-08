@@ -536,8 +536,13 @@ const SOURCE_RETRY_DELAYS = [3, 8, 15].map(minutes => minutes * 60000);
 const TRANSFER_RETRY_DELAYS = [10, 30, 60].map(seconds => seconds * 1000);
 const sourceRetryTimers = new Map();
 
+function sourceRecoveryExhausted(error) {
+  return Array.isArray(error?.sources) && error.sources.some(item => item?.exhausted);
+}
+
 function isDeferrableSourceError(task, error) {
   if (!/^\d{1,30}$/.test(String(task.hongguoInfo?.vid || ''))) return false;
+  if (sourceRecoveryExhausted(error)) return false;
   if (error?.code === 'SOURCE_UNAVAILABLE') {
     const sources = Array.isArray(error.sources) ? error.sources : [];
     return !sources.some(item => item.code === 'SECURITY_BLOCKED') && sources.some(item =>
@@ -1926,6 +1931,7 @@ function awaitMediaOperation(promise, signal, timeout = 0) {
 
 /** Retry the complete operation so a broken body never counts as a successful download. */
 async function withMediaRecovery(vid, seriesId, options, consume) {
+  const lookupTimeout = 30000;
   const controller = new AbortController();
   const abort = () => controller.abort();
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -1934,8 +1940,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
     options.cancelToken?.throwIfRequested();
     if (options.signal?.aborted || controller.signal.aborted) throw Object.assign(new Error('已取消媒体请求'), { code: 'ERR_CANCELED' });
   };
-  const recoverable = error => error?.mediaRetryable || error?.code === 'SOURCE_UNAVAILABLE'
-    || ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EPIPE', 'ERR_BAD_RESPONSE', 'ERR_STREAM_PREMATURE_CLOSE', 'EAI_AGAIN'].includes(error?.code);
+  const recoverable = error => !sourceRecoveryExhausted(error) && (error?.mediaRetryable || error?.code === 'SOURCE_UNAVAILABLE'
+    || ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EPIPE', 'ERR_BAD_RESPONSE', 'ERR_STREAM_PREMATURE_CLOSE', 'EAI_AGAIN'].includes(error?.code));
   const rounds = options.recover !== false && /^\d{1,30}$/.test(String(vid)) ? 3 : 1;
   let lastError, transfers = 0;
   try {
@@ -1951,7 +1957,9 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       try {
         info = !round && options.playInfo || await awaitMediaOperation(hongguo.fetchPlayUrlSingle(vid, seriesId,
           { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0,
-            role: options.sourceRole, onStage: options.onStage, signal: controller.signal }), controller.signal, 30000);
+            role: options.sourceRole, onStage: options.onStage, signal: controller.signal,
+            // Leave time for the provider's terminal supplement result to reach this waiter.
+            supplementDeadline: Date.now() + lookupTimeout - 1000 }), controller.signal, lookupTimeout);
       } catch (error) {
         cancelled();
         if (!recoverable(error)) throw error;
@@ -1961,8 +1969,7 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       cancelled();
       if (!info?.url) {
         lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code, sources: info?.sources });
-        // 主备均空已由取源流程处理完毕；收到该结果立即结束本轮，避免马上重走三次模型请求。
-        if (!recoverable(lastError) || info?.locked || info?.sources?.some(item => item?.exhausted)
+        if (!recoverable(lastError) || info?.locked
           || (info?.sources?.length === 1 && info.sources[0]?.code === 'UNSUPPORTED_CODEC')) throw lastError;
         continue;
       }
@@ -2635,8 +2642,8 @@ async function prepareManagedPlayback(payload) {
       directH264: entry.directH264, mediaSource: entry.mediaSource || '' };
   } catch (error) {
     if (streamId) releaseOnlineSession(streamId);
-    // 主备均空的终态结果单独标记：预取收到后停止推进本轮队列，前台用于准确提示。
-    return { success: false, error: error.message, ...(error?.sources?.some(item => item?.exhausted) ? { exhausted: true } : {}) };
+    // 预取遇到已结束恢复的取源结果时停止推进本轮队列。
+    return { success: false, error: error.message, ...(sourceRecoveryExhausted(error) ? { exhausted: true } : {}) };
   }
 }
 
@@ -2714,7 +2721,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       cached, streaming: !!entry.playInfo, codec: String(entry.codec || '') };
   } catch (error) {
     releaseOnlineSession(streamId);
-    return { success: false, error: error.message, ...(error?.sources?.some(item => item?.exhausted) ? { exhausted: true } : {}) };
+    return { success: false, error: error.message, ...(sourceRecoveryExhausted(error) ? { exhausted: true } : {}) };
   }
 });
 

@@ -272,9 +272,9 @@ function decryptSpadeUrl(value, seed) {
     return plaintext.toString('utf8');
 }
 
-function checkedUrl(value, domains) {
+function checkedUrl(value, domains, base) {
     let url;
-    try { url = new URL(value); } catch (_) { throw Object.assign(new Error('App 片源地址格式无效'), { code: 'INVALID_RESPONSE' }); }
+    try { url = new URL(value, base); } catch (_) { throw Object.assign(new Error('App 片源地址格式无效'), { code: 'INVALID_RESPONSE' }); }
     if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') ||
         !domains.some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) {
         throw Object.assign(new Error('App 片源返回了不受支持的服务地址'), { code: 'SECURITY_BLOCKED' });
@@ -305,7 +305,7 @@ async function requestJson(url, options, deadline, signal) {
         if ([301, 302, 303, 307, 308].includes(response.status)) {
             // Do not resend a signed body to a redirect destination.
             if (options.method === 'POST' || !response.headers.location) throw Object.assign(new Error('App 接口发生不支持的跳转'), { code: 'SECURITY_BLOCKED' });
-            url = checkedUrl(new URL(response.headers.location, url).href, ['fqnovel.com', 'snssdk.com']);
+            url = checkedUrl(response.headers.location, ['fqnovel.com', 'snssdk.com'], url);
             continue;
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
@@ -425,23 +425,99 @@ async function fetchAppPlayUrl(vid, options = {}) {
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
     if (!model) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
     const inline = model.video_list && typeof model.video_list === 'object' && Object.keys(model.video_list).length > 0;
-    let info = model;
-    if (!inline) {
-        const fallback = parseFallback(model.fallback_api);
-        if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
-        // 补充媒体信息请求的空响应不进入主备快速恢复路径，单独提示。
-        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal).catch(error => {
-            if (error.code !== 'EMPTY_RESPONSE') throw error;
-            sourceLog(`${vid} ${role} 补充信息 0B ${Date.now() - started}ms 空响应`);
-            throw Object.assign(new Error('补充播放信息返回空响应，请稍后重试'),
-                { code: 'EMPTY_RESPONSE', recovery: { route: recovery.route, sessionUpdated: recovery.sessionUpdated, fastUpdate: 'none', stage: 'supplement' } });
-        });
+    const selection = { vid, requestedQuality, preferQuality: options.preferQuality };
+    const routeRecovery = { route: recovery.route, sessionUpdated: recovery.sessionUpdated };
+    const result = variants => ({ ...variants[0], variants, recovery: routeRecovery });
+    const readSupplement = async (fallback, requestDeadline = deadline, requestSignal = signal) => {
+        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, requestDeadline, requestSignal);
         if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
             throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
         }
-        info = outer?.video_info?.data;
+        if (!outer.video_info?.data) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
+        return outer.video_info.data;
+    };
+    if (!inline) {
+        const fallback = parseFallback(model.fallback_api);
+        if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
+        const info = await readSupplement(fallback).catch(error => {
+            if (error.code !== 'EMPTY_RESPONSE') throw error;
+            sourceLog(`${vid} ${role} 补充信息 0B ${Date.now() - started}ms 空响应`);
+            throw Object.assign(new Error('补充播放信息返回空响应，请稍后重试'),
+                { code: 'EMPTY_RESPONSE', recovery: { ...routeRecovery, fastUpdate: 'none', stage: 'supplement' } });
+        });
+        return result(selectAppVariants(info, selection));
     }
-    if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
+    let minimum;
+    try {
+        return result(selectAppVariants(model, { ...selection, inline: true }));
+    } catch (error) {
+        if (error.code !== 'INLINE_ENCRYPTION_MISSING' || !error.rendition || !hasMediaIdentity(model)) throw error;
+        minimum = error.rendition;
+    }
+    const fallback = parseFallback(model.fallback_api);
+    if (!fallback) throw Object.assign(new Error('本集片源缺少加密信息，且未提供补充接口'), { code: 'INLINE_ENCRYPTION_MISSING' });
+    const supplementStarted = Date.now();
+    const supplementDeadline = Math.min(deadline, options.supplementDeadline ?? deadline);
+    const supplementSignal = supplementDeadline < deadline
+        ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(0, supplementDeadline - supplementStarted))])
+        : signal;
+    try {
+        options.signal?.throwIfAborted();
+        const info = await readSupplement(fallback, supplementDeadline, supplementSignal);
+        options.signal?.throwIfAborted();
+        if (supplementSignal.aborted) throw Object.assign(new Error('App 片源请求超时'), { code: 'ETIMEDOUT' });
+        if (!hasMediaIdentity(info) || info.video_id !== model.video_id ||
+            Math.abs(Number(info.video_duration) - Number(model.video_duration)) > 0.5) {
+            throw Object.assign(new Error('补充片源的媒体编号或完整时长与原片不符'), { code: 'SUPPLEMENT_MISMATCH' });
+        }
+        const variants = selectAppVariants(info, { ...selection, minimum });
+        sourceLog(`${vid} 补充播放信息 成功 ${Date.now() - supplementStarted}ms`);
+        return result(variants);
+    } catch (error) {
+        const failure = options.signal?.aborted ? Object.assign(new Error('已取消补充播放信息请求'), { code: 'ERR_CANCELED' }) : error;
+        sourceLog(`${vid} 补充播放信息 失败:${failure.code || (failure.status ? `HTTP_${failure.status}` : 'INVALID_RESPONSE')} ${Date.now() - supplementStarted}ms`);
+        throw Object.assign(failure, { exhausted: true, recovery: { ...routeRecovery, stage: 'supplement' } });
+    }
+}
+
+function hasMediaIdentity(model) {
+    const { video_id: id, video_duration: duration } = model;
+    return typeof id === 'string' && id.trim() && ['number', 'string'].includes(typeof duration) &&
+        Number.isFinite(Number(duration)) && Number(duration) > 0;
+}
+
+const unencrypted = [false, 0, '0', 'false'];
+const encrypted = [true, 1, '1', 'true'];
+
+function readEncryption(item, strict, bytevc2) {
+    if (!strict) {
+        const spade = item.spade_a || item.encrypt_info?.spade_a;
+        const flag = item.encrypt_info?.encrypt ?? item.encrypt;
+        if (!spade && bytevc2 && !unencrypted.includes(flag)) throw new Error('本集片源缺少有效解密信息');
+        return { key: spade ? deriveContentKey(spade) : null };
+    }
+    const metadata = [item, item.encrypt_info ?? {}];
+    if (typeof metadata[1] !== 'object' || Array.isArray(metadata[1])) throw new Error('本集片源加密信息格式无效');
+    const flags = metadata.filter(value => Object.hasOwn(value, 'encrypt')).map(value => value.encrypt);
+    const clear = flags.every(flag => unencrypted.includes(flag));
+    if (!clear && !flags.every(flag => encrypted.includes(flag))) throw new Error('本集片源加密状态无效');
+    // Explicitly clear streams can carry an empty key placeholder.
+    const spades = metadata.filter(value => Object.hasOwn(value, 'spade_a'))
+        .map(value => value.spade_a).filter(spade => !(flags.length && clear && spade === ''));
+    if (spades.length) {
+        const [key] = spades.map(spade => deriveContentKey(typeof spade === 'string' ? spade : ''));
+        return { key };
+    }
+    if (!flags.length) return { missing: true };
+    if (clear) return { key: null };
+    throw new Error('本集加密片源缺少有效密钥');
+}
+
+function compareDimensions(a, b) {
+    return Math.min(a.width, a.height) - Math.min(b.width, b.height) || a.width * a.height - b.width * b.height;
+}
+
+function selectAppVariants(info, { vid, requestedQuality, preferQuality, inline = false, minimum }) {
     const streams = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
         const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'h265_hvc1', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : codec === 'bytevc2' ? 2 : 3;
@@ -449,20 +525,22 @@ async function fetchAppPlayUrl(vid, options = {}) {
         const pixels = Number(quality.match(/\d+/)?.[0] || 0);
         const meta = item.video_meta || {};
         const [width, height] = [[item.vwidth, item.vheight], [item.width, item.height], [meta.vwidth, meta.vheight], [meta.width, meta.height]]
-            .map(pair => pair.map(Number)).find(pair => pair.every(value => Number.isFinite(value) && value > 0)) || [0, 0];
+            .map(pair => pair.map(value => ['number', 'string'].includes(typeof value) ? Number(value) : NaN))
+            .find(pair => pair.every(value => Number.isSafeInteger(value) && value > 0)) || [0, 0];
         return { item, codec, codecRank, quality, pixels, width, height };
     });
     const compatible = streams.filter(row => row.codecRank < 2);
     // ByteVC2 must be confirmed by this model itself: media identity, a finite
     // positive full duration and real dimensions, otherwise it stays unusable.
     const modelDuration = Number(info.video_duration);
-    const modelUsable = typeof info.video_id === 'string' && info.video_id.trim() && Number.isFinite(modelDuration) && modelDuration > 0;
+    const modelUsable = hasMediaIdentity(info);
     const supportsBytevc2 = platform === 'linux' && arch === 'x64';
     const convertible = streams.filter(row => supportsBytevc2 && row.codecRank === 2 && modelUsable && row.width > 0 && row.height > 0)
         .map(row => ({ ...row, duration: modelDuration }));
-    const rankRows = group => group.filter(row => meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
-        ? (options.preferQuality !== false
-            ? Math.min(b.width, b.height) - Math.min(a.width, a.height) || b.width * b.height - a.width * a.height || a.codecRank - b.codecRank
+    const rankRows = group => group.filter(row => meetsDownloadQuality(row, requestedQuality) &&
+        (!minimum || compareDimensions(row, minimum) >= 0)).sort((a, b) => requestedQuality === 'auto'
+        ? (preferQuality !== false
+            ? compareDimensions(b, a) || a.codecRank - b.codecRank
             : a.codecRank - b.codecRank || b.pixels - a.pixels)
         : Math.min(a.width, a.height) - Math.min(b.width, b.height) || a.codecRank - b.codecRank);
     const groups = [rankRows(compatible), rankRows(convertible)];
@@ -472,13 +550,15 @@ async function fetchAppPlayUrl(vid, options = {}) {
             supportsBytevc2 && streams.some(row => row.codecRank === 2)
                 ? `本集 ByteVC2 片源缺少可确认的媒体标识、完整时长或实际尺寸（所选清晰度 ${requestedQuality}），暂不能转换`
                 : `本集仅返回暂不支持的编码（所选清晰度 ${requestedQuality}）`), { code: 'UNSUPPORTED_CODEC' });
+        if (minimum) throw Object.assign(new Error('补充片源的实际尺寸未达到原档位'), { code: 'SUPPLEMENT_QUALITY' });
         const measured = [...compatible, ...convertible].filter(row => row.width > 0 && row.height > 0)
             .sort((a, b) => Math.min(b.width, b.height) - Math.min(a.width, a.height));
         throw Object.assign(new Error(`本集暂无尺寸可确认且满足 ${requestedQuality} 的片源，未降级`), measured.length
             ? { code: 'QUALITY_UNAVAILABLE', width: measured[0].width, height: measured[0].height }
             : { code: 'RESOLUTION_UNKNOWN' });
     }
-    let lastError;
+    let lastError, selectedCount = 0;
+    const missingEncryption = [];
     // A compatible candidate must pass URL and encryption checks before it can
     // prevent the fallback to ByteVC2.
     for (const rows of groups) {
@@ -489,17 +569,13 @@ async function fetchAppPlayUrl(vid, options = {}) {
         const best = rows[0];
         const selectedRows = requestedQuality === 'auto'
             ? rows.filter(row => best.width && best.height
-                ? Math.min(row.width, row.height) === Math.min(best.width, best.height) && row.width * row.height === best.width * best.height
+                ? compareDimensions(row, best) === 0
                 : row.pixels === best.pixels)
             : rows;
+        selectedCount += selectedRows.length;
         for (const selected of selectedRows) {
             try {
-                const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
-                const encrypted = selected.item.encrypt_info?.encrypt ?? selected.item.encrypt;
-                if (!spade && (inline || selected.codec === 'bytevc2') && ![false, 0, '0', 'false'].includes(encrypted)) {
-                    throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
-                }
-                const key = spade ? deriveContentKey(spade) : null;
+                const { key, missing } = readEncryption(selected.item, inline || !!minimum, selected.codec === 'bytevc2');
                 for (const candidate of [selected.item.main_url, selected.item.backup_url, ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
                     if (typeof candidate !== 'string' || !candidate) continue;
                     try {
@@ -507,6 +583,10 @@ async function fetchAppPlayUrl(vid, options = {}) {
                             ? decryptSpadeUrl(candidate, Buffer.from(info.key_seed, 'base64'))
                             : cleanUrl(candidate);
                         const url = checkedUrl(media, ['qznovelvod.com', 'fqnovelvod.com', 'douyinvod.com']);
+                        if (missing) {
+                            missingEncryption.push(selected);
+                            break;
+                        }
                         const contentKey = key ? key.toString('hex') : null;
                         const identity = `${url}:${contentKey || ''}`;
                         if (seen.has(identity)) continue;
@@ -522,7 +602,12 @@ async function fetchAppPlayUrl(vid, options = {}) {
                 }
             } catch (error) { lastError = error; }
         }
-        if (variants.length) return { ...variants[0], variants, recovery: { route: recovery.route, sessionUpdated: recovery.sessionUpdated } };
+        if (variants.length) return variants;
+    }
+    if (inline && missingEncryption.length === selectedCount) {
+        const { width, height } = missingEncryption[0];
+        throw Object.assign(new Error('本集片源缺少加密状态和密钥'), { code: 'INLINE_ENCRYPTION_MISSING',
+            rendition: missingEncryption.every(row => row.width > 0 && row.height > 0) ? { width, height } : null });
     }
     throw lastError?.code === 'SECURITY_BLOCKED' ? lastError
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE' });

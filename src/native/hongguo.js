@@ -661,6 +661,7 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
           quality, preferQuality: true,
           role: ['foreground', 'next', 'distant'].includes(options.role) ? options.role : undefined,
           onStage: typeof options.onStage === 'function' ? options.onStage : undefined,
+          supplementDeadline: options.supplementDeadline,
           signal,
         });
       } catch (error) {
@@ -674,6 +675,14 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
 }
 
 function sourceFailure(source, error) {
+  const failure = describeSourceFailure(source, error);
+  if (error?.recovery?.stage !== 'supplement' || !error.exhausted) return failure;
+  const message = ['EMPTY_RESPONSE', 'SUPPLEMENT_MISMATCH', 'SUPPLEMENT_QUALITY'].includes(failure.code)
+    ? failure.message : `补充播放信息失败（${failure.message}）`;
+  return { ...failure, message, stage: 'supplement', exhausted: true };
+}
+
+function describeSourceFailure(source, error) {
   const message = String(error?.message || '');
   const code = String(error?.code || '');
   if (code === 'DEVICE_REGISTRATION_FAILED') {
@@ -704,6 +713,9 @@ function sourceFailure(source, error) {
   }
   if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
+  if (code === 'INLINE_ENCRYPTION_MISSING') return { source, code, message: '本集片源缺少加密状态和密钥，无法确认可播放的片源' };
+  if (code === 'SUPPLEMENT_MISMATCH') return { source, code, message: '补充片源的媒体编号或完整时长与原片不符' };
+  if (code === 'SUPPLEMENT_QUALITY') return { source, code, message: '补充片源的实际尺寸未达到原档位' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };
   if (code === 'INVALID_RESPONSE' || /空响应|有效数据|目录数据不完整|JSON/.test(message)) return { source, code: 'INVALID_RESPONSE', message: '片源数据无法解析' };
   if (code === 'QUALITY_UNAVAILABLE') {
